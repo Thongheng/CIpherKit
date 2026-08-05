@@ -114,9 +114,23 @@ class AppSettingManager(object):
         if app_name not in self.app_settings:
             self.app_settings[app_name] = {"endpoints": {}}
         self.app_settings[app_name].setdefault("endpoints", {})
-        ep_data = {"keys_order": keys_order}
+
+        existing_ep = self.app_settings[app_name]["endpoints"].get(url_pattern, {})
+        ep_data = dict(existing_ep)
+        ep_data["keys_order"] = keys_order
+
         if custom_data is not None:
             ep_data["custom_data"] = custom_data
+        elif "custom_data" not in ep_data:
+            c_data = {}
+            keys_list = [k.strip() for k in keys_order.split(",") if k.strip()]
+            if "token" in keys_list:
+                c_data["token"] = ""
+            if "secret" in keys_list:
+                c_data["secret"] = ""
+            if c_data:
+                ep_data["custom_data"] = c_data
+
         self.app_settings[app_name]["endpoints"][url_pattern] = ep_data
         self.save()
 

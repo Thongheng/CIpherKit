@@ -29,6 +29,7 @@ from core.crypto_snippet_engine import CryptoSnippetEngine
 from core.key_finder import (
     compare_generated_hash, format_hash_comparison,
     should_render_hash_output, strip_hash_comparison, find_key_orders,
+    fetch_frida_hook,
 )
 from ui.components.rounded_border import RoundedBorder
 from ui.components.custom_data_panel import CompactCustomDataPanel
@@ -119,31 +120,23 @@ class HashGenEditorTab(IMessageEditorTab):
         hashConfigPanel.add(self._keysField, hgbc)
         hgbc.gridwidth = 1  # restore
 
-        # Row 2: Known String (full width, spans columns 1-3)
+        # Row 2: Custom Data (spans columns 1-3)
         hgbc.gridy = 2
-        hgbc.gridx = 0; hgbc.weightx = 0; hgbc.fill = GridBagConstraints.NONE; hgbc.anchor = GridBagConstraints.WEST
-        hashConfigPanel.add(JLabel("Known String:"), hgbc)
-        hgbc.gridx = 1; hgbc.gridwidth = 3; hgbc.weightx = 0.0; hgbc.fill = GridBagConstraints.HORIZONTAL; hgbc.anchor = GridBagConstraints.WEST
-        hashConfigPanel.add(self._inlineKfKnownArea, hgbc)
-        hgbc.gridwidth = 1  # restore
-
-        # Row 3: Custom Data (spans columns 1-3)
-        hgbc.gridy = 3
         hgbc.gridx = 0; hgbc.weightx = 0; hgbc.fill = GridBagConstraints.NONE; hgbc.anchor = GridBagConstraints.NORTHWEST
         hashConfigPanel.add(JLabel("Custom Data:"), hgbc)
         hgbc.gridx = 1; hgbc.gridwidth = 3; hgbc.weightx = 0.0; hgbc.fill = GridBagConstraints.HORIZONTAL; hgbc.anchor = GridBagConstraints.WEST
         hashConfigPanel.add(self._customDataPanel, hgbc)
         hgbc.gridwidth = 1  # restore
 
-        # Row 4: Buttons — Inject + Find Order (Generate removed: auto-hash handles it)
-        hgbc.gridy = 4; hgbc.gridx = 0; hgbc.gridwidth = 4; hgbc.weightx = 1.0
+        # Row 3: Control Buttons — Get Timestamp & Inject
+        hgbc.gridy = 3; hgbc.gridx = 0; hgbc.gridwidth = 4; hgbc.weightx = 1.0
         hgbc.fill = GridBagConstraints.HORIZONTAL; hgbc.anchor = GridBagConstraints.EAST
         hashBtnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0))
         self._inlineKfFindBtn = JButton("Find Order", actionPerformed=self._onInlineKfFind)
+        self._fetchFridaBtn = JButton("Fetch Frida", actionPerformed=self._onInlineFetchFrida)
         inlineTsBtn = JButton("Get Timestamp", actionPerformed=self._onInlineGetTimestamp)
         hashBtnPanel.add(inlineTsBtn)
         hashBtnPanel.add(self._injectBtn)
-        hashBtnPanel.add(self._inlineKfFindBtn)
         hashConfigPanel.add(hashBtnPanel, hgbc)
         hgbc.gridwidth = 1  # restore
 
@@ -411,7 +404,7 @@ class HashGenEditorTab(IMessageEditorTab):
                     custom_pairs = _outerRef2._customDataPanel.getPairs()
                     if any(k and not v for k, v in custom_pairs.items()):
                         return
-                    _outerRef2._onGenerate()
+                    _outerRef2._onGenerateAndInject()
                 except Exception:
                     pass
         self._autoHashTimer = _SwingTimer(600, _AutoHashAction())
@@ -684,6 +677,37 @@ class HashGenEditorTab(IMessageEditorTab):
                 self._lastHashText = plain_hash
         except Exception:
             pass
+
+    def _tryAutoFetchFridaHook(self, auto_search=True):
+        """Extract timestamp or values from body and search /tmp/cipherkit_frida.log."""
+        try:
+            from core.key_finder import fetch_frida_hook
+            from core.body_parser import parse_body, flatten_data
+
+            body = self._bodyArea.getText().strip()
+            if not body:
+                return False
+
+            pairs = flatten_data(parse_body(body, getattr(self, '_contentType', '')))
+
+            ts_val = pairs.get('ts') or pairs.get('timestamp') or pairs.get('time') or pairs.get('req_time')
+
+            raw_string, matched_ts, matched_via = fetch_frida_hook(ts_val=ts_val, values=pairs)
+
+            if raw_string:
+                self._inlineKfKnownArea.setText(raw_string)
+                if auto_search:
+                    SwingUtilities.invokeLater(lambda: self._onInlineKfFind())
+                return True
+        except Exception as e:
+            print("[CipherKit] Auto-fetch Frida error: %s" % str(e))
+        return False
+
+    def _onInlineFetchFrida(self, event=None):
+        """Manual trigger to fetch Frida hook from /tmp/cipherkit_frida.log."""
+        fetched = self._tryAutoFetchFridaHook(auto_search=True)
+        if not fetched:
+            self._setKfStatus("No Frida hook found in /tmp/cipherkit_frida.log", "error")
 
     def _onInlineKfFind(self, event=None):
         """Find key order on a worker thread, then apply the result on Swing."""
@@ -965,22 +989,29 @@ class HashGenEditorTab(IMessageEditorTab):
             self._bodyArea.setCaretPosition(0)
             self._bodyLoadingProgrammatically = False
 
-            # Burp reuses editor instances; Sign Order edit state is request-scoped.
-            self._setKeysField("", False)
-
             # Extract URL path for app setting matching
-            self._requestPath = _extract_request_path(analyzed)
+            new_request_path = _extract_request_path(analyzed)
+            path_changed = (new_request_path != getattr(self, '_requestPath', ''))
+            self._requestPath = new_request_path
+
+            # Only reset Sign Order if switching to a DIFFERENT URL path
+            if path_changed:
+                self._setKeysField("", False)
 
             # Try auto-load an app setting matching this URL path
             setting_loaded = self._tryLoadAppSetting()
 
-            # Only auto-extract keys if no setting was loaded and user hasn't manually edited
-            if not setting_loaded and not self._keysUserEdited:
+            # Only auto-extract keys if no setting was loaded and Sign Order is empty
+            if not setting_loaded and not self._keysUserEdited and not self._keysField.getText().strip():
                 self._tryExtractKeys()
 
             # Sync remaining config from main tab (only fields not set by app setting)
             if not setting_loaded:
                 self._syncFromMainTab()
+
+            # Auto-fetch Frida hook matching request timestamp/parameters if available
+            if path_changed or not self._keysField.getText().strip():
+                self._tryAutoFetchFridaHook(auto_search=True)
 
             # If the Crypto tab is already selected, re-run auto-decrypt now that
             # key/iv have been populated (the mode-change listener may have fired
@@ -1076,11 +1107,17 @@ class HashGenEditorTab(IMessageEditorTab):
                 ct = getattr(self, '_contentType', '')
                 data = parse_body(body_str, ct)
                 field_name = self._hashFieldName.getText().strip() or "hash"
-                data[field_name] = str(result)
-                serialized = serialize_body(data, body_str, ct)
-                self._bodyArea.setText(serialized)
-                self._tryFormatJson()
-                self._bodyArea.setCaretPosition(0)
+                if isinstance(data, dict):
+                    data[field_name] = str(result)
+                    serialized = serialize_body(data, body_str, ct)
+                    old_prog = self._bodyLoadingProgrammatically
+                    self._bodyLoadingProgrammatically = True
+                    try:
+                        self._bodyArea.setText(serialized)
+                        self._tryFormatJson()
+                        self._bodyArea.setCaretPosition(0)
+                    finally:
+                        self._bodyLoadingProgrammatically = old_prog
                 # Only update the output area when NOT in Crypto mode
                 if not crypto_output_mode:
                     text = str(result)

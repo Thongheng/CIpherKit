@@ -26,6 +26,26 @@ class KeyOrderSearchTests(unittest.TestCase):
         self.assertEqual(20, visited)
         self.assertTrue(capped)
 
+    def test_detects_token_suffix_and_ignores_hash_field(self):
+        fields = {
+            "aba_id": "4001205",
+            "ts": "1784273912798",
+            "hash": "38367028E861EF49ECC13DD9BB11F3948CD89AD1"
+        }
+        known = "40012051784273912798zQA/B2uxc7Jr4Kf0+SqM+5XXXnPdyUwAlUCb4Go0W1uMvOrHobhJPWyivtLe2caF"
+        matches, _, _ = find_key_orders(fields, known)
+        self.assertEqual([("aba_id", "ts", "token")], matches)
+
+    def test_detects_secret_suffix(self):
+        fields = {
+            "aba_id": "1435349",
+            "pin": "123456",
+            "ts": "1784273912798"
+        }
+        known = "14353491784273912798123456y2rNlFOX/fNiLJXieYmHTnJfZjZJWtTm6SeYrVEHzaM="
+        matches, _, _ = find_key_orders(fields, known)
+        self.assertEqual([("aba_id", "ts", "pin", "secret")], matches)
+
 class CompareGeneratedHashTests(unittest.TestCase):
     def test_compares_case_insensitively(self):
         self.assertEqual("valid", compare_generated_hash("ABCD", {"hash": "abcd"}, "hash"))
@@ -55,5 +75,27 @@ class CompareGeneratedHashTests(unittest.TestCase):
     def test_comparison_forces_hash_output_even_in_crypto_mode(self):
         self.assertTrue(should_render_hash_output(True, True))
         self.assertFalse(should_render_hash_output(False, True))
+
+
+class FetchFridaHookTests(unittest.TestCase):
+    def test_fetches_hook_by_timestamp(self):
+        import os, tempfile, json
+        from core.key_finder import fetch_frida_hook
+
+        temp_log = tempfile.mktemp()
+        with open(temp_log, "w") as f:
+            f.write(json.dumps({"ts": "1784273912798", "raw_string": "40012051784273912798zQA/B2uxc7Jr4Kf0"}) + "\n")
+
+        try:
+            raw, matched_ts, mode = fetch_frida_hook("1784273912798", log_path=temp_log)
+            self.assertEqual("40012051784273912798zQA/B2uxc7Jr4Kf0", raw)
+            self.assertEqual("1784273912798", matched_ts)
+            self.assertEqual("timestamp", mode)
+        finally:
+            if os.path.exists(temp_log):
+                os.remove(temp_log)
+
+
 if __name__ == "__main__":
     unittest.main()
+

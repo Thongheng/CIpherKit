@@ -42,6 +42,7 @@ from core.crypto_engine import CryptoEngine
 from core.crypto_snippet_engine import CryptoSnippetEngine
 from core.utils import _extract_request_path
 from ui.editor_tab import HashGenEditorTab
+from ui.batch_tab import BatchMapperTab
 from ui.components.rounded_border import RoundedBorder, _roundedCompound
 from ui.components.custom_data_panel import CustomDataPanel, CompactCustomDataPanel
 from ui.components.listeners import PayloadDocumentListener
@@ -294,10 +295,11 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
 
 
         # Tabbed pane for Generator / Crypto / Editor
-        self._generatorPanel = self._buildGeneratorTab()
-        self._cryptoPanel    = self._buildCryptoTab()
-        self._keyFinderPanel = self._buildKeyFinderTab()
-        self._settingPanel   = self._buildSettingTab()
+        self._generatorPanel   = self._buildGeneratorTab()
+        self._cryptoPanel      = self._buildCryptoTab()
+        self._keyFinderPanel   = self._buildKeyFinderTab()
+        self._batchMapperPanel = BatchMapperTab(self)
+        self._settingPanel     = self._buildSettingTab()
 
         self.update_tab_visibility()
 
@@ -393,6 +395,10 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         optionsPanel.add(self._optShowAs, ogbc)
 
         ogbc.gridy = 2; ogbc.gridx = 0
+        self._optShowBatch = JCheckBox("Enable Batch Mapper Tab", self.ext_settings.get("show_batch_mapper", True))
+        optionsPanel.add(self._optShowBatch, ogbc)
+
+        ogbc.gridy = 3; ogbc.gridx = 0
         defaultAppPanel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0))
         defaultAppPanel.setOpaque(False)
         defaultAppPanel.add(JLabel("Default Load App:"))
@@ -403,7 +409,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         defaultAppPanel.add(self._optDefaultAppCombo)
         optionsPanel.add(defaultAppPanel, ogbc)
 
-        ogbc.gridy = 3; ogbc.gridx = 0; ogbc.insets = Insets(10, 6, 4, 6)
+        ogbc.gridy = 4; ogbc.gridx = 0; ogbc.insets = Insets(10, 6, 4, 6)
         saveOptBtn = JButton("Save Options", actionPerformed=self._onSaveExtensionSettings)
         optionsPanel.add(saveOptBtn, ogbc)
 
@@ -1549,6 +1555,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         return {
             "show_crypto": True,
             "show_app_setting": True,
+            "show_batch_mapper": True,
             "default_app": "(none)"
         }
 
@@ -1563,6 +1570,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         try:
             self.ext_settings["show_crypto"] = self._optShowCrypto.isSelected()
             self.ext_settings["show_app_setting"] = self._optShowAs.isSelected()
+            self.ext_settings["show_batch_mapper"] = self._optShowBatch.isSelected()
             self.ext_settings["default_app"] = str(self._optDefaultAppCombo.getSelectedItem())
             
             self._save_settings()
@@ -1583,6 +1591,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
     def update_tab_visibility(self):
         show_crypto = self.ext_settings.get("show_crypto", True)
         show_as = self.ext_settings.get("show_app_setting", True)
+        show_batch = self.ext_settings.get("show_batch_mapper", True)
         
         # Re-add to suite tab if we want to change extender level tabs
         self._tabbedPane = JTabbedPane()
@@ -1590,6 +1599,8 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         if show_crypto:
             self._tabbedPane.addTab("Crypto", self._cryptoPanel)
         self._tabbedPane.addTab("Key Finder", self._keyFinderPanel)
+        if show_batch:
+            self._tabbedPane.addTab("Batch Mapper", self._batchMapperPanel)
         if show_as:
             self._tabbedPane.addTab("AppSetting", self._settingPanel)
 

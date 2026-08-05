@@ -3,32 +3,87 @@ from __future__ import print_function
 
 
 def find_key_orders(values, known, max_matches=100, max_visited=10000):
-    """Find value concatenation orders without mutating the caller's mapping."""
-    keys = list(values.keys())
-    normalized = dict((key, str(value)) for key, value in values.items())
+    """
+    Find field order sequence that constructs the known raw string.
+    Supports body parameter matching plus detection of static token/secret/custom suffix/prefix.
+    """
+    if not known or not values:
+        return [], 0, False
+
+    known_str = str(known).strip()
+    if not known_str:
+        return [], 0, False
+
+    # Filter out hash/signature fields from candidate values
+    ignore_keys = set(["hash", "signature", "sign", "sig", "token_hash", "mac"])
+    clean_values = {}
+    for k, v in values.items():
+        if k.lower() in ignore_keys:
+            continue
+        v_str = str(v).strip() if v is not None else ""
+        if v_str:
+            clean_values[k] = v_str
+
+    if not clean_values:
+        return [], 0, False
+
+    keys = list(clean_values.keys())
     matches = []
     visited = [0]
 
-    def dfs(current, remaining, suffix):
+    def get_token_name(segment):
+        if not segment:
+            return None
+        if segment.endswith("="):
+            return "secret"
+        return "token"
+
+    def dfs(current_order, remaining_keys, current_pos):
         visited[0] += 1
         if len(matches) >= max_matches or visited[0] >= max_visited:
             return
-        if not suffix:
-            if current:
-                matches.append(tuple(current))
+
+        if current_pos == len(known_str):
+            if current_order:
+                matches.append(tuple(current_order))
             return
-        for key in remaining:
+
+        matched_any = False
+        for key in list(remaining_keys):
             if visited[0] >= max_visited or len(matches) >= max_matches:
                 return
-            value = normalized[key]
-            if not value or not suffix.startswith(value):
-                continue
-            next_keys = [candidate for candidate in remaining if candidate != key]
-            dfs(current + [key], next_keys, suffix[len(value):])
+            val = clean_values[key]
+            if known_str.startswith(val, current_pos):
+                matched_any = True
+                next_remaining = [k for k in remaining_keys if k != key]
+                dfs(current_order + [key], next_remaining, current_pos + len(val))
 
-    dfs([], keys, str(known))
-    capped = len(matches) >= max_matches or visited[0] >= max_visited
-    return matches, visited[0], capped
+        if not matched_any and current_order and current_pos < len(known_str):
+            remaining_suffix = known_str[current_pos:]
+            custom_matched = False
+            for key in list(remaining_keys):
+                val = clean_values[key]
+                if val and val == remaining_suffix:
+                    dfs(current_order + [key], [k for k in remaining_keys if k != key], len(known_str))
+                    custom_matched = True
+                    break
+
+            if not custom_matched and len(remaining_suffix) >= 4:
+                token_key = get_token_name(remaining_suffix)
+                if token_key and token_key not in current_order:
+                    dfs(current_order + [token_key], remaining_keys, len(known_str))
+
+    dfs([], keys, 0)
+
+    unique_matches = []
+    seen = set()
+    for m in matches:
+        if m not in seen:
+            seen.add(m)
+            unique_matches.append(m)
+
+    capped = len(unique_matches) >= max_matches or visited[0] >= max_visited
+    return unique_matches, visited[0], capped
 
 
 def compare_generated_hash(generated_hash, payload, hash_field):
@@ -68,3 +123,53 @@ def strip_hash_comparison(value):
 def should_render_hash_output(compare_requested, crypto_output_mode):
     """A comparison must display its generated hash even from Crypto mode."""
     return bool(compare_requested or not crypto_output_mode)
+
+
+def fetch_frida_hook(ts_val=None, values=None, log_path="/tmp/cipherkit_frida.log"):
+    """
+    Search /tmp/cipherkit_frida.log for a hooked unhashed raw string matching
+    the provided timestamp (ts_val) or candidate request body values.
+    Returns (raw_string, matched_ts, matched_via) or (None, None, None).
+    """
+    import os, json
+
+    if not os.path.exists(log_path):
+        return None, None, None
+
+    target_ts = str(ts_val).strip() if ts_val is not None else ""
+    val_strs = [str(v).strip() for v in (values.values() if isinstance(values, dict) else []) if v and len(str(v).strip()) >= 4]
+
+    try:
+        with open(log_path, "r") as f:
+            lines = f.readlines()
+
+        # Read from newest to oldest for faster lookup
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                log_ts = str(data.get("ts", "")).strip()
+                raw_str = str(data.get("raw_string", "")).strip()
+
+                if not raw_str:
+                    continue
+
+                # 1. Match by timestamp (ts parameter or contained in raw_str)
+                if target_ts and (log_ts == target_ts or target_ts in raw_str):
+                    return raw_str, log_ts or target_ts, "timestamp"
+
+                # 2. Match by values if ts was not specified or didn't match
+                if val_strs and sum(1 for v in val_strs if v in raw_str) >= 2:
+                    return raw_str, log_ts, "parameter_value"
+            except Exception:
+                # Handle raw text lines if plain strings were logged
+                if target_ts and target_ts in line:
+                    return line, target_ts, "text_match"
+
+    except Exception as e:
+        print("[CipherKit] Error reading Frida log: " + str(e))
+
+    return None, None, None
+
