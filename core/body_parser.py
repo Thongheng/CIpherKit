@@ -112,7 +112,7 @@ def _try_parse_multipart(body_str, content_type):
         state       = "seek"
         current_name  = None
         value_lines   = []
-        in_header_block = False
+        is_large_or_file = False
 
         for line in lines:
             stripped = line.strip()
@@ -122,7 +122,7 @@ def _try_parse_multipart(body_str, content_type):
                     state = "headers"
                     current_name = None
                     value_lines  = []
-                    in_header_block = True
+                    is_large_or_file = False
                 continue
 
             if state == "headers":
@@ -131,31 +131,47 @@ def _try_parse_multipart(body_str, content_type):
                     state = "value"
                 else:
                     lower = stripped.lower()
-                    if "content-disposition" in lower and "name=" in lower:
-                        for seg in stripped.split(";"):
-                            seg = seg.strip()
-                            if seg.lower().startswith("name="):
-                                current_name = seg[5:].strip().strip('"\'')
+                    if "content-disposition" in lower:
+                        if "filename=" in lower:
+                            is_large_or_file = True
+                        if "name=" in lower:
+                            for seg in stripped.split(";"):
+                                seg = seg.strip()
+                                if seg.lower().startswith("name="):
+                                    current_name = seg[5:].strip().strip('"\'')
+                    if lower.startswith("content-length:"):
+                        try:
+                            val_len = int(lower.split("content-length:", 1)[1].strip())
+                            if val_len > 500:
+                                is_large_or_file = True
+                        except Exception:
+                            pass
                 continue
 
             if state == "value":
                 if stripped == delimiter or stripped == delimiter_end:
-                    # Save current field
-                    if current_name is not None:
-                        result[current_name] = "\n".join(value_lines).rstrip("\r\n ")
+                    # Save current field if not a large file / upload
+                    if current_name is not None and not is_large_or_file:
+                        val_str = "\n".join(value_lines).rstrip("\r\n ")
+                        if len(val_str) <= 500:
+                            result[current_name] = val_str
                     # Reset for next part
                     current_name = None
                     value_lines  = []
+                    is_large_or_file = False
                     if stripped == delimiter_end:
                         state = "seek"  # done
                     else:
                         state = "headers"
                 else:
-                    value_lines.append(line)
+                    if not is_large_or_file:
+                        value_lines.append(line)
 
         # Flush any trailing field (malformed final boundary)
-        if state == "value" and current_name is not None:
-            result[current_name] = "\n".join(value_lines).rstrip("\r\n ")
+        if state == "value" and current_name is not None and not is_large_or_file:
+            val_str = "\n".join(value_lines).rstrip("\r\n ")
+            if len(val_str) <= 500:
+                result[current_name] = val_str
 
         if result:
             return result

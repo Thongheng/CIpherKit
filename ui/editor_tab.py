@@ -400,10 +400,6 @@ class HashGenEditorTab(IMessageEditorTab):
                     idx = _outerRef2._configTabs.getSelectedIndex()
                     if idx != 0:  # Hash tab only
                         return
-                    # Only auto-hash if all custom data fields have values
-                    custom_pairs = _outerRef2._customDataPanel.getPairs()
-                    if any(k and not v for k, v in custom_pairs.items()):
-                        return
                     _outerRef2._onGenerateAndInject()
                 except Exception:
                     pass
@@ -679,9 +675,10 @@ class HashGenEditorTab(IMessageEditorTab):
             pass
 
     def _tryAutoFetchFridaHook(self, auto_search=True):
-        """Extract timestamp or values from body and search /tmp/cipherkit_frida.log."""
+        """Extract timestamp or values from body and search /tmp/cipherkit_frida.log for candidates."""
         try:
-            from core.key_finder import fetch_frida_hook
+            import hashlib
+            from core.key_finder import fetch_all_frida_candidates, find_key_orders
             from core.body_parser import parse_body, flatten_data
 
             body = self._bodyArea.getText().strip()
@@ -689,14 +686,45 @@ class HashGenEditorTab(IMessageEditorTab):
                 return False
 
             pairs = flatten_data(parse_body(body, getattr(self, '_contentType', '')))
-
             ts_val = pairs.get('ts') or pairs.get('timestamp') or pairs.get('time') or pairs.get('req_time')
 
-            raw_string, matched_ts, matched_via = fetch_frida_hook(ts_val=ts_val, values=pairs)
+            candidates = fetch_all_frida_candidates(ts_val=ts_val, values=pairs)
+            if not candidates:
+                return False
 
-            if raw_string:
-                self._inlineKfKnownArea.setText(raw_string)
-                if auto_search:
+            request_hash = ""
+            for h_field in ("hash", "signature", "sign", "sig", "mac"):
+                if h_field in pairs and pairs[h_field]:
+                    request_hash = str(pairs[h_field]).strip().lower()
+                    break
+
+            values = dict((k, str(v)) for k, v in pairs.items())
+
+            best_raw = None
+            fallback_raw = None
+
+            for raw_string, matched_ts, matched_via in candidates:
+                matches, visited, capped = find_key_orders(values, raw_string)
+                if matches:
+                    if not fallback_raw:
+                        fallback_raw = raw_string
+                    if request_hash:
+                        try:
+                            raw_bytes = raw_string.encode('utf-8')
+                            sha256_hex = hashlib.sha256(raw_bytes).hexdigest().lower()
+                            sha1_hex = hashlib.sha1(raw_bytes).hexdigest().lower()
+                            md5_hex = hashlib.md5(raw_bytes).hexdigest().lower()
+                            if request_hash in (sha256_hex, sha1_hex, md5_hex):
+                                best_raw = raw_string
+                                break
+                        except Exception:
+                            pass
+
+            selected_raw = best_raw or fallback_raw or candidates[0][0]
+
+            if selected_raw:
+                self._inlineKfKnownArea.setText(selected_raw)
+                if auto_search and not self._keysField.getText().strip():
                     SwingUtilities.invokeLater(lambda: self._onInlineKfFind())
                 return True
         except Exception as e:
@@ -1072,7 +1100,7 @@ class HashGenEditorTab(IMessageEditorTab):
     # --- Actions ---
 
     def _onGenerate(self, event=None):
-        compare_requested = bool(getattr(self, '_shouldCompareHash', False))
+        compare_requested = bool(getattr(self, '_shouldCompareHash', True))
         result, debug_log = self._computeHash()
         try:
             crypto_output_mode = str(self._extender._activeOutputCombo.getSelectedItem()) == "Crypto"
@@ -1083,14 +1111,11 @@ class HashGenEditorTab(IMessageEditorTab):
             self._lastHashText = text
             self._hashOutput.setText(text)
         try:
-            if compare_requested:
-                body_str = self._bodyArea.getText().strip()
-                payload = parse_body(body_str, getattr(self, '_contentType', ''))
-                comparable_payload = flatten_data(payload) if isinstance(payload, dict) else payload
-                hash_field = self._hashFieldName.getText().strip() or "hash"
-                self._setHashStatus(compare_generated_hash(result, comparable_payload, hash_field))
-            else:
-                self._setHashStatus("")
+            body_str = self._bodyArea.getText().strip()
+            payload = parse_body(body_str, getattr(self, '_contentType', ''))
+            comparable_payload = flatten_data(payload) if isinstance(payload, dict) else payload
+            hash_field = self._hashFieldName.getText().strip() or "hash"
+            self._setHashStatus(compare_generated_hash(result, comparable_payload, hash_field))
         finally:
             self._shouldCompareHash = False
 
@@ -1113,9 +1138,11 @@ class HashGenEditorTab(IMessageEditorTab):
                     old_prog = self._bodyLoadingProgrammatically
                     self._bodyLoadingProgrammatically = True
                     try:
+                        old_caret = self._bodyArea.getCaretPosition()
                         self._bodyArea.setText(serialized)
                         self._tryFormatJson()
-                        self._bodyArea.setCaretPosition(0)
+                        new_len = len(self._bodyArea.getText())
+                        self._bodyArea.setCaretPosition(min(old_caret, new_len))
                     finally:
                         self._bodyLoadingProgrammatically = old_prog
                 # Only update the output area when NOT in Crypto mode
@@ -1123,6 +1150,10 @@ class HashGenEditorTab(IMessageEditorTab):
                     text = str(result)
                     self._lastHashText = text
                     self._hashOutput.setText(text)
+                
+                # Check comparison match status
+                comparable_payload = flatten_data(data) if isinstance(data, dict) else parse_body(body_str, ct)
+                self._setHashStatus(compare_generated_hash(result, comparable_payload, field_name))
             except Exception as e:
                 self._hashOutput.setText("Error injecting hash: %s" % str(e))
         else:
@@ -1523,10 +1554,11 @@ class HashGenEditorTab(IMessageEditorTab):
             data[field] = str(encrypted)
             serialized  = serialize_body(data, body_str, ct)
             self._lastEncryptedPlaintext = plaintext  # guard against re-encrypt loop
-            # Update body without disrupting caret
+            old_caret = self._bodyArea.getCaretPosition()
             self._bodyArea.setText(serialized)
             self._tryFormatJson()
-            self._bodyArea.setCaretPosition(0)
+            new_len = len(self._bodyArea.getText())
+            self._bodyArea.setCaretPosition(min(old_caret, new_len))
         except Exception as e:
             print("[CipherKit] Auto-encrypt error: %s" % str(e))
 

@@ -125,19 +125,22 @@ def should_render_hash_output(compare_requested, crypto_output_mode):
     return bool(compare_requested or not crypto_output_mode)
 
 
-def fetch_frida_hook(ts_val=None, values=None, log_path="/tmp/cipherkit_frida.log"):
+def fetch_all_frida_candidates(ts_val=None, values=None, log_path="/tmp/cipherkit_frida.log"):
     """
-    Search /tmp/cipherkit_frida.log for a hooked unhashed raw string matching
+    Search /tmp/cipherkit_frida.log for all hooked unhashed raw string candidates matching
     the provided timestamp (ts_val) or candidate request body values.
-    Returns (raw_string, matched_ts, matched_via) or (None, None, None).
+    Returns a list of tuples: [(raw_string, matched_ts, matched_via), ...].
     """
     import os, json
 
     if not os.path.exists(log_path):
-        return None, None, None
+        return []
 
     target_ts = str(ts_val).strip() if ts_val is not None else ""
     val_strs = [str(v).strip() for v in (values.values() if isinstance(values, dict) else []) if v and len(str(v).strip()) >= 4]
+
+    candidates = []
+    seen_raws = set()
 
     try:
         with open(log_path, "r") as f:
@@ -153,23 +156,35 @@ def fetch_frida_hook(ts_val=None, values=None, log_path="/tmp/cipherkit_frida.lo
                 log_ts = str(data.get("ts", "")).strip()
                 raw_str = str(data.get("raw_string", "")).strip()
 
-                if not raw_str:
+                if not raw_str or raw_str in seen_raws:
                     continue
 
-                # 1. Match by timestamp (ts parameter or contained in raw_str)
                 if target_ts and (log_ts == target_ts or target_ts in raw_str):
-                    return raw_str, log_ts or target_ts, "timestamp"
-
-                # 2. Match by values if ts was not specified or didn't match
-                if val_strs and sum(1 for v in val_strs if v in raw_str) >= 2:
-                    return raw_str, log_ts, "parameter_value"
+                    candidates.append((raw_str, log_ts or target_ts, "timestamp"))
+                    seen_raws.add(raw_str)
+                elif val_strs and sum(1 for v in val_strs if v in raw_str) >= 2:
+                    candidates.append((raw_str, log_ts, "parameter_value"))
+                    seen_raws.add(raw_str)
             except Exception:
-                # Handle raw text lines if plain strings were logged
                 if target_ts and target_ts in line:
-                    return line, target_ts, "text_match"
+                    if line not in seen_raws:
+                        candidates.append((line, target_ts, "text_match"))
+                        seen_raws.add(line)
 
     except Exception as e:
         print("[CipherKit] Error reading Frida log: " + str(e))
 
+    return candidates
+
+
+def fetch_frida_hook(ts_val=None, values=None, log_path="/tmp/cipherkit_frida.log"):
+    """
+    Search /tmp/cipherkit_frida.log for a hooked unhashed raw string matching
+    the provided timestamp (ts_val) or candidate request body values.
+    Returns (raw_string, matched_ts, matched_via) or (None, None, None).
+    """
+    candidates = fetch_all_frida_candidates(ts_val=ts_val, values=values, log_path=log_path)
+    if candidates:
+        return candidates[0]
     return None, None, None
 

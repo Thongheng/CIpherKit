@@ -2,7 +2,7 @@
 from __future__ import print_function
 import re
 from core.body_parser import parse_body, flatten_data
-from core.key_finder import fetch_frida_hook, find_key_orders
+from core.key_finder import fetch_frida_hook, fetch_all_frida_candidates, find_key_orders
 from core.utils import _extract_request_path
 
 
@@ -145,10 +145,10 @@ def process_http_item(helpers, http_item, log_path="/tmp/cipherkit_frida.log"):
     # Find ts timestamp candidate
     ts_val = pairs.get('ts') or pairs.get('timestamp') or pairs.get('time') or pairs.get('req_time')
 
-    # Fetch Frida hook log
-    raw_string, matched_ts, matched_via = fetch_frida_hook(ts_val=ts_val, values=pairs, log_path=log_path)
+    # Fetch all candidate Frida hook logs
+    candidates = fetch_all_frida_candidates(ts_val=ts_val, values=pairs, log_path=log_path)
 
-    if not raw_string:
+    if not candidates:
         return {
             "status": "NO_FRIDA_HOOK",
             "host": host,
@@ -162,26 +162,68 @@ def process_http_item(helpers, http_item, log_path="/tmp/cipherkit_frida.log"):
             "body_str": body_str,
         }
 
-    # Run key order search
+    # Extract target request hash if available for verification
+    request_hash = ""
+    for h_field in ("hash", "signature", "sign", "sig", "mac"):
+        if h_field in pairs and pairs[h_field]:
+            request_hash = str(pairs[h_field]).strip().lower()
+            break
+
     values = dict((k, str(v)) for k, v in pairs.items())
-    matches, visited, capped = find_key_orders(values, raw_string)
 
-    if matches:
-        sign_order = ", ".join(matches[0])
-        status = "MATCHED"
-    else:
-        sign_order = ""
-        status = "NO_SIGN_MATCH"
+    best_match = None
+    fallback_match = None
 
+    import hashlib
+    for raw_string, matched_ts, matched_via in candidates:
+        matches, visited, capped = find_key_orders(values, raw_string)
+        if matches:
+            sign_order = ", ".join(matches[0])
+            candidate_res = {
+                "status": "MATCHED",
+                "host": host,
+                "method": method,
+                "url_path": url_path,
+                "full_url": full_url,
+                "sign_order": sign_order,
+                "raw_string": raw_string,
+                "ts": matched_ts or (str(ts_val) if ts_val else ""),
+                "pairs": pairs,
+                "body_str": body_str,
+            }
+            if not fallback_match:
+                fallback_match = candidate_res
+
+            # Hash verification check if request has a hash field
+            if request_hash:
+                try:
+                    raw_bytes = raw_string.encode('utf-8')
+                    sha256_hex = hashlib.sha256(raw_bytes).hexdigest().lower()
+                    sha1_hex = hashlib.sha1(raw_bytes).hexdigest().lower()
+                    md5_hex = hashlib.md5(raw_bytes).hexdigest().lower()
+
+                    if request_hash in (sha256_hex, sha1_hex, md5_hex):
+                        best_match = candidate_res
+                        break
+                except Exception:
+                    pass
+
+    selected = best_match or fallback_match
+
+    if selected:
+        return selected
+
+    # If candidates existed but no sign order matched
+    first_cand = candidates[0]
     return {
-        "status": status,
+        "status": "NO_SIGN_MATCH",
         "host": host,
         "method": method,
         "url_path": url_path,
         "full_url": full_url,
-        "sign_order": sign_order,
-        "raw_string": raw_string,
-        "ts": matched_ts or (str(ts_val) if ts_val else ""),
+        "sign_order": "",
+        "raw_string": first_cand[0],
+        "ts": first_cand[1] or (str(ts_val) if ts_val else ""),
         "pairs": pairs,
         "body_str": body_str,
     }

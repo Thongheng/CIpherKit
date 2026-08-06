@@ -62,5 +62,72 @@ class MultipartSerializationTests(unittest.TestCase):
         self.assertTrue(result.endswith("--b--\r\n"))
 
 
+    def test_parse_and_serialize_user_multipart_request(self):
+        original = (
+            "--5b3f12fa-03cf-4fb7-ae17-6686841b16a6\r\n"
+            'Content-Disposition: form-data; name="ipf_code"\r\n'
+            "Content-Transfer-Encoding: binary\r\n"
+            "Content-Type: multipart/form-data; charset=utf-8\r\n"
+            "Content-Length: 0\r\n\r\n\r\n"
+            "--5b3f12fa-03cf-4fb7-ae17-6686841b16a6\r\n"
+            'Content-Disposition: form-data; name="trx_id"\r\n'
+            "Content-Transfer-Encoding: binary\r\n"
+            "Content-Type: multipart/form-data; charset=utf-8\r\n"
+            "Content-Length: 36\r\n\r\n"
+            "c089053f-b5ce-48f8-a3ec-cfa6afab1d2c\r\n"
+            "--5b3f12fa-03cf-4fb7-ae17-6686841b16a6\r\n"
+            'Content-Disposition: form-data; name="hash"\r\n'
+            "Content-Transfer-Encoding: binary\r\n"
+            "Content-Type: multipart/form-data; charset=utf-8\r\n"
+            "Content-Length: 40\r\n\r\n"
+            "6F38EB165620C2C403E592BBAFB4F4AB5FCF0823\r\n"
+            "--5b3f12fa-03cf-4fb7-ae17-6686841b16a6\r\n"
+            'Content-Disposition: form-data; name="selfie_face"; filename="1785995692869.jpeg"\r\n'
+            "Content-Type: image/jpeg\r\n"
+            "Content-Length: 253456\r\n\r\n"
+            "BINARY_DATA_IMAGE\r\n"
+            "--5b3f12fa-03cf-4fb7-ae17-6686841b16a6--\r\n"
+        )
+        ct = "multipart/form-data; boundary=5b3f12fa-03cf-4fb7-ae17-6686841b16a6"
+        data = parse_body(original, ct)
+
+        self.assertEqual("c089053f-b5ce-48f8-a3ec-cfa6afab1d2c", data.get("trx_id"))
+        self.assertEqual("6F38EB165620C2C403E592BBAFB4F4AB5FCF0823", data.get("hash"))
+
+        data["hash"] = "NEW_HASH_VAL_123456789012345678901234567890"
+        serialized = serialize_body(data, original, ct)
+
+        self.assertIn("NEW_HASH_VAL_123456789012345678901234567890", serialized)
+        self.assertIn('filename="1785995692869.jpeg"', serialized)
+        self.assertIn("BINARY_DATA_IMAGE", serialized)
+
+    def test_multipart_payload_with_binary_data_and_equals(self):
+        original = (
+            "--bbec4099-f0df-48f4-a729-8807080de149\r\n"
+            'Content-Disposition: form-data; name="trx_id"\r\n\r\n'
+            "12e22e86-ce5a-4bc4-9223-18d4779c1f3c\r\n"
+            "--bbec4099-f0df-48f4-a729-8807080de149\r\n"
+            'Content-Disposition: form-data; name="aba_id"\r\n\r\n'
+            "0\r\n"
+            "--bbec4099-f0df-48f4-a729-8807080de149\r\n"
+            'Content-Disposition: form-data; name="hash"\r\n\r\n'
+            "E98DEEB8E861867F75C9592A1A2E83C58BBB486D\r\n"
+            "--bbec4099-f0df-48f4-a729-8807080de149\r\n"
+            'Content-Disposition: form-data; name="ts"\r\n\r\n'
+            "1786009402765\r\n"
+            "--bbec4099-f0df-48f4-a729-8807080de149\r\n"
+            'Content-Disposition: form-data; name="selfie_face"; filename="1786009402854.jpeg"\r\n'
+            "Content-Type: image/jpeg\r\n\r\n"
+            "BINARY_DATA=123&test=456=789\r\n"
+            "--bbec4099-f0df-48f4-a729-8807080de149--\r\n"
+        )
+        ct = "multipart/form-data; boundary=bbec4099-f0df-48f4-a729-8807080de149"
+        data = parse_body(original, ct)
+
+        self.assertEqual("12e22e86-ce5a-4bc4-9223-18d4779c1f3c", data.get("trx_id"))
+        self.assertEqual("1786009402765", data.get("ts"))
+        self.assertEqual("E98DEEB8E861867F75C9592A1A2E83C58BBB486D", data.get("hash"))
+
+
 if __name__ == "__main__":
     unittest.main()

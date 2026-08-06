@@ -140,6 +140,42 @@ class BatchMapperTests(unittest.TestCase):
         self.assertEqual(2, results[0]["req_id"])
         self.assertEqual("data", results[0]["pairs"].get("new"))
 
+    def test_verifies_correct_candidate_via_hash_matching(self):
+        import hashlib, tempfile, os
+        temp_log = tempfile.mktemp()
+        ts_val = "1786009402765"
+        
+        # Wrong candidate for another request with same ts
+        wrong_raw = "14353491786009402765wrong_token_data"
+        # Correct candidate matching request parameters
+        correct_raw = "012e22e86-ce5a-4bc4-9223-18d4779c1f3c1786009402765correct_token_data"
+        correct_hash = hashlib.sha1(correct_raw.encode('utf-8')).hexdigest().upper()
+
+        with open(temp_log, "w") as f:
+            f.write(json.dumps({"ts": ts_val, "raw_string": wrong_raw}) + "\n")
+            f.write(json.dumps({"ts": ts_val, "raw_string": correct_raw}) + "\n")
+
+        body_json = json.dumps({
+            "trx_id": "12e22e86-ce5a-4bc4-9223-18d4779c1f3c",
+            "aba_id": "0",
+            "ts": ts_val,
+            "hash": correct_hash,
+        })
+        raw_req = "POST /api/v3/face_descriptor5 HTTP/1.1\r\nHost: mdev.ababank.com\r\nContent-Type: application/json\r\n\r\n" + body_json
+        dummy_item = DummyHttpRequestResponse(raw_req)
+
+        callbacks = DummyCallbacks([dummy_item])
+        helpers = DummyHelpers()
+
+        try:
+            results = scan_proxy_history(callbacks, helpers, url_filter="*", method_filter="POST", log_path=temp_log)
+            self.assertEqual(1, len(results))
+            self.assertEqual("MATCHED", results[0]["status"])
+            self.assertEqual(correct_raw, results[0]["raw_string"])
+        finally:
+            if os.path.exists(temp_log):
+                os.remove(temp_log)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -81,7 +81,7 @@ class CryptoEngine(object):
             return res, ""
 
         except Exception as e:
-            return "Error: %s\n%s" % (str(e), traceback.format_exc())
+            return ("Error: %s\n%s" % (str(e), traceback.format_exc()), "")
 
 
 # =============================================================================
