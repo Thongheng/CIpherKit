@@ -70,10 +70,10 @@ class HashGenEditorTab(IMessageEditorTab):
         # Hash sub-tab panel
         # ----------------------------------------------------------------
         hashConfigPanel = JPanel(GridBagLayout())
-        hashConfigPanel.setBorder(EmptyBorder(4, 5, 4, 5))
+        hashConfigPanel.setBorder(EmptyBorder(2, 4, 2, 4))
 
         hgbc = GridBagConstraints()
-        hgbc.insets = Insets(2, 2, 2, 2)
+        hgbc.insets = Insets(1, 2, 1, 2)
         hgbc.fill = GridBagConstraints.HORIZONTAL
         hgbc.weightx = 1.0
         hgbc.gridx = 0
@@ -92,28 +92,26 @@ class HashGenEditorTab(IMessageEditorTab):
         )
         self._hashFieldName = JTextField("hash")
         self._hashFieldName.setToolTipText("JSON key name where the output will be injected")
-        self._injectBtn = JButton("Inject", actionPerformed=self._onGenerateAndInject)
-        self._injectBtn.setToolTipText("Generate hash and inject into the request body")
         self._inlineKfKnownArea = JTextField()
         self._inlineKfKnownArea.setToolTipText("Paste the known concatenated string here for key order search")
 
         # Row 0: Algo & Secret
-        hgbc.gridy = 0
+        hgbc.gridy = 0; hgbc.weighty = 0.0
         hgbc.gridx = 0; hgbc.weightx = 0; hgbc.fill = GridBagConstraints.NONE; hgbc.anchor = GridBagConstraints.WEST
         hashConfigPanel.add(JLabel("Algo:"), hgbc)
         hgbc.gridx = 1; hgbc.weightx = 0.5; hgbc.fill = GridBagConstraints.HORIZONTAL; hgbc.anchor = GridBagConstraints.WEST
         hashConfigPanel.add(self._algoCombo, hgbc)
 
         hgbc.gridx = 2; hgbc.weightx = 0; hgbc.fill = GridBagConstraints.NONE; hgbc.anchor = GridBagConstraints.WEST
-        hgbc.insets = Insets(2, 16, 2, 4)  # spacer on left of Col 2
+        hgbc.insets = Insets(1, 10, 1, 2)  # spacer on left of Col 2
         self._passcodeLbl = JLabel("Secret:")
         hashConfigPanel.add(self._passcodeLbl, hgbc)
         hgbc.gridx = 3; hgbc.weightx = 0.5; hgbc.fill = GridBagConstraints.HORIZONTAL; hgbc.anchor = GridBagConstraints.WEST
-        hgbc.insets = Insets(2, 4, 2, 4)  # restore insets
+        hgbc.insets = Insets(1, 2, 1, 2)  # restore insets
         hashConfigPanel.add(self._passcodeField, hgbc)
 
         # Row 1: Sign Order (spans columns 1-3)
-        hgbc.gridy = 1
+        hgbc.gridy = 1; hgbc.weighty = 0.0
         hgbc.gridx = 0; hgbc.weightx = 0; hgbc.fill = GridBagConstraints.NONE; hgbc.anchor = GridBagConstraints.WEST
         hashConfigPanel.add(JLabel("Sign Order:"), hgbc)
         hgbc.gridx = 1; hgbc.gridwidth = 3; hgbc.weightx = 0.0; hgbc.fill = GridBagConstraints.HORIZONTAL; hgbc.anchor = GridBagConstraints.WEST
@@ -121,23 +119,25 @@ class HashGenEditorTab(IMessageEditorTab):
         hgbc.gridwidth = 1  # restore
 
         # Row 2: Custom Data (spans columns 1-3)
-        hgbc.gridy = 2
+        hgbc.gridy = 2; hgbc.weighty = 0.0
         hgbc.gridx = 0; hgbc.weightx = 0; hgbc.fill = GridBagConstraints.NONE; hgbc.anchor = GridBagConstraints.NORTHWEST
         hashConfigPanel.add(JLabel("Custom Data:"), hgbc)
         hgbc.gridx = 1; hgbc.gridwidth = 3; hgbc.weightx = 0.0; hgbc.fill = GridBagConstraints.HORIZONTAL; hgbc.anchor = GridBagConstraints.WEST
         hashConfigPanel.add(self._customDataPanel, hgbc)
         hgbc.gridwidth = 1  # restore
 
-        # Row 3: Control Buttons — Get Timestamp & Inject
-        hgbc.gridy = 3; hgbc.gridx = 0; hgbc.gridwidth = 4; hgbc.weightx = 1.0
+        # Row 3: Optional Control Buttons — Run Hash & Get Timestamp
+        hgbc.gridy = 3; hgbc.gridx = 0; hgbc.gridwidth = 4; hgbc.weightx = 1.0; hgbc.weighty = 0.0
         hgbc.fill = GridBagConstraints.HORIZONTAL; hgbc.anchor = GridBagConstraints.EAST
-        hashBtnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0))
+        self._hashBtnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0))
         self._inlineKfFindBtn = JButton("Find Order", actionPerformed=self._onInlineKfFind)
         self._fetchFridaBtn = JButton("Fetch Frida", actionPerformed=self._onInlineFetchFrida)
-        inlineTsBtn = JButton("Get Timestamp", actionPerformed=self._onInlineGetTimestamp)
-        hashBtnPanel.add(inlineTsBtn)
-        hashBtnPanel.add(self._injectBtn)
-        hashConfigPanel.add(hashBtnPanel, hgbc)
+        self._runHashBtn = JButton("Run Hash", actionPerformed=self._onManualRunHash)
+        self._runHashBtn.setToolTipText("Manually calculate hash and print to output (without modifying request body)")
+        self._inlineTsBtn = JButton("Get Timestamp", actionPerformed=self._onInlineGetTimestamp)
+        self._hashBtnPanel.add(self._runHashBtn)
+        self._hashBtnPanel.add(self._inlineTsBtn)
+        hashConfigPanel.add(self._hashBtnPanel, hgbc)
         hgbc.gridwidth = 1  # restore
 
 
@@ -207,12 +207,12 @@ class HashGenEditorTab(IMessageEditorTab):
         # AppSetting sub-tab panel
         # ----------------------------------------------------------------
         appSettingTabPanel = JPanel(GridBagLayout())
-        appSettingTabPanel.setBorder(EmptyBorder(6, 6, 6, 6))
+        appSettingTabPanel.setBorder(EmptyBorder(2, 4, 2, 4))
         pgbc = GridBagConstraints()
-        pgbc.insets = Insets(3, 4, 3, 4)
+        pgbc.insets = Insets(1, 2, 1, 2)
         pgbc.anchor = GridBagConstraints.WEST
 
-        # Row 0: App selector + Load + link to the full suite-tab editor
+        # Row 0: App selector + Load
         pgbc.gridy = 0; pgbc.gridx = 0; pgbc.weightx = 0; pgbc.fill = GridBagConstraints.NONE
         appSettingTabPanel.add(JLabel("App:"), pgbc)
         pgbc.gridx = 1; pgbc.weightx = 1.0; pgbc.fill = GridBagConstraints.HORIZONTAL
@@ -222,40 +222,36 @@ class HashGenEditorTab(IMessageEditorTab):
         self._inlineSettingCombo.addActionListener(lambda e: self._refreshInlineSettingInfo())
         _pt_appRow = JPanel(BorderLayout(4, 0))
         _pt_appRow.add(self._inlineSettingCombo, BorderLayout.CENTER)
-        _pt_appBtns = JPanel(FlowLayout(FlowLayout.RIGHT, 3, 0))
         _pt_loadBtn = JButton("Load", actionPerformed=self._onInlineLoadSetting)
         _pt_loadBtn.setToolTipText("Load selected app setting into all config fields")
-        self._inlineOpenMainSettingsBtn = JButton(
-            "Open Main", actionPerformed=self._onOpenMainAppSetting
-        )
-        self._inlineOpenMainSettingsBtn.setToolTipText(
-            "Select AppSetting in the main CipherKit suite tab for full profile management"
-        )
-        _pt_appBtns.add(_pt_loadBtn)
-        _pt_appBtns.add(self._inlineOpenMainSettingsBtn)
-        _pt_appRow.add(_pt_appBtns, BorderLayout.EAST)
+        _pt_appRow.add(_pt_loadBtn, BorderLayout.EAST)
         appSettingTabPanel.add(_pt_appRow, pgbc)
 
-        # Row 1: Current URL (read-only info)
+        # Row 1: Current URL & Matched Endpoint in one compact row
         pgbc.gridy = 1; pgbc.gridx = 0; pgbc.weightx = 0; pgbc.fill = GridBagConstraints.NONE
-        appSettingTabPanel.add(JLabel("Current URL:"), pgbc)
+        appSettingTabPanel.add(JLabel("Matched:"), pgbc)
         pgbc.gridx = 1; pgbc.weightx = 1.0; pgbc.fill = GridBagConstraints.HORIZONTAL
+        _urlMatchRow = JPanel(GridBagLayout())
+        umgbc = GridBagConstraints()
+        umgbc.insets = Insets(0, 0, 0, 4)
+        umgbc.gridy = 0; umgbc.gridx = 0; umgbc.weightx = 0; umgbc.fill = GridBagConstraints.NONE
+        _urlMatchRow.add(JLabel("URL:"), umgbc)
+        umgbc.gridx = 1; umgbc.weightx = 0.5; umgbc.fill = GridBagConstraints.HORIZONTAL
         self._inlineUrlLabel = JTextField("")
         self._inlineUrlLabel.setEditable(False)
         self._inlineUrlLabel.setForeground(Color(80, 80, 80))
-        appSettingTabPanel.add(self._inlineUrlLabel, pgbc)
-
-        # Row 2: Most-specific endpoint resolved for this request
-        pgbc.gridy = 2; pgbc.gridx = 0; pgbc.weightx = 0; pgbc.fill = GridBagConstraints.NONE
-        appSettingTabPanel.add(JLabel("Matched Endpoint:"), pgbc)
-        pgbc.gridx = 1; pgbc.weightx = 1.0; pgbc.fill = GridBagConstraints.HORIZONTAL
+        _urlMatchRow.add(self._inlineUrlLabel, umgbc)
+        umgbc.gridx = 2; umgbc.weightx = 0; umgbc.fill = GridBagConstraints.NONE; umgbc.insets = Insets(0, 8, 0, 4)
+        _urlMatchRow.add(JLabel("EP:"), umgbc)
+        umgbc.gridx = 3; umgbc.weightx = 0.5; umgbc.fill = GridBagConstraints.HORIZONTAL; umgbc.insets = Insets(0, 0, 0, 0)
         self._inlineMatchedEndpointField = JTextField("(none)")
         self._inlineMatchedEndpointField.setEditable(False)
         self._inlineMatchedEndpointField.setForeground(Color(80, 80, 80))
-        appSettingTabPanel.add(self._inlineMatchedEndpointField, pgbc)
+        _urlMatchRow.add(self._inlineMatchedEndpointField, umgbc)
+        appSettingTabPanel.add(_urlMatchRow, pgbc)
 
-        # Row 3: Endpoint keys order (editable, linked to main keys field)
-        pgbc.gridy = 3; pgbc.gridx = 0; pgbc.weightx = 0; pgbc.fill = GridBagConstraints.NONE
+        # Row 2: Endpoint keys order
+        pgbc.gridy = 2; pgbc.gridx = 0; pgbc.weightx = 0; pgbc.fill = GridBagConstraints.NONE
         appSettingTabPanel.add(JLabel("Sign Order:"), pgbc)
         pgbc.gridx = 1; pgbc.weightx = 1.0; pgbc.fill = GridBagConstraints.HORIZONTAL
         _pt_epRow = JPanel(BorderLayout(4, 0))
@@ -270,43 +266,44 @@ class HashGenEditorTab(IMessageEditorTab):
         _pt_epRow.add(_pt_saveEpBtn, BorderLayout.EAST)
         appSettingTabPanel.add(_pt_epRow, pgbc)
 
-        # Row 4: Apply Custom Value (inline key + value + button)
-        pgbc.gridy = 4; pgbc.gridx = 0; pgbc.weightx = 0; pgbc.fill = GridBagConstraints.NONE
+        # Row 3: Update Value form
+        pgbc.gridy = 3; pgbc.gridx = 0; pgbc.weightx = 0; pgbc.fill = GridBagConstraints.NONE
         appSettingTabPanel.add(JLabel("Update Value:"), pgbc)
         pgbc.gridx = 1; pgbc.weightx = 1.0; pgbc.fill = GridBagConstraints.HORIZONTAL
         _pt_applyRow = JPanel(BorderLayout(4, 0))
-        
         _pt_left = JPanel(FlowLayout(FlowLayout.LEFT, 2, 0))
         self._inlineCustomKeyField = JTextField("token", 7)
         self._inlineCustomKeyField.setToolTipText("Custom data key name (e.g. token)")
         _pt_left.add(self._inlineCustomKeyField)
         _pt_left.add(JLabel(" :"))
         _pt_applyRow.add(_pt_left, BorderLayout.WEST)
-        
         self._inlineCustomValField = JTextField("")
         self._inlineCustomValField.setToolTipText("New value to set for all matching keys")
         _pt_applyRow.add(self._inlineCustomValField, BorderLayout.CENTER)
-        
         _pt_doApplyBtn = JButton("Apply", actionPerformed=self._onInlineApplyCustomValue)
         _pt_doApplyBtn.setToolTipText("Update this key in all endpoints of the selected app and save")
         _pt_applyRow.add(_pt_doApplyBtn, BorderLayout.EAST)
         appSettingTabPanel.add(_pt_applyRow, pgbc)
 
-        # Row 5: Compact, non-blocking request/profile status
-        pgbc.gridy = 5; pgbc.gridx = 0; pgbc.gridwidth = 2
+        # Row 4: Profile status
+        pgbc.gridy = 4; pgbc.gridx = 0; pgbc.gridwidth = 2
         pgbc.weightx = 1.0; pgbc.fill = GridBagConstraints.HORIZONTAL
         self._inlineSettingStatus = JLabel("No profile matched")
         self._inlineSettingStatus.setForeground(Color(100, 100, 100))
         appSettingTabPanel.add(self._inlineSettingStatus, pgbc)
 
-        # Filler row to push content to top
-        pgbc.gridy = 6; pgbc.gridx = 0; pgbc.gridwidth = 2
-        pgbc.weighty = 1.0; pgbc.fill = GridBagConstraints.VERTICAL
-        appSettingTabPanel.add(JPanel(), pgbc)
+        hashConfigContainer = JPanel(BorderLayout())
+        hashConfigContainer.add(hashConfigPanel, BorderLayout.NORTH)
 
-        self._hashConfigPanel = hashConfigPanel
-        self._cryptoConfigPanel = cryptoConfigPanel
-        self._appSettingTabPanel = appSettingTabPanel
+        cryptoConfigContainer = JPanel(BorderLayout())
+        cryptoConfigContainer.add(cryptoConfigPanel, BorderLayout.NORTH)
+
+        appSettingContainer = JPanel(BorderLayout())
+        appSettingContainer.add(appSettingTabPanel, BorderLayout.NORTH)
+
+        self._hashConfigPanel = hashConfigContainer
+        self._cryptoConfigPanel = cryptoConfigContainer
+        self._appSettingTabPanel = appSettingContainer
 
         self._configTabs = configTabs
         self._panel.add(configTabs, BorderLayout.NORTH)
@@ -580,28 +577,11 @@ class HashGenEditorTab(IMessageEditorTab):
         custom_data = app.get("custom_data")
         if ep and "custom_data" in ep:
             custom_data = merge_custom_data(custom_data, ep["custom_data"])
-        if custom_data is not None:
-            # Merge incoming custom_data with current UI pairs to avoid overwriting non-empty user input with empty/null settings
-            current_pairs = self._customDataPanel.getPairs()
-            merged_data = {}
-            for k, v in custom_data.items():
-                current_val = current_pairs.get(k, "")
-                try:
-                    is_str = isinstance(v, (str, unicode))
-                except NameError:
-                    is_str = isinstance(v, str)
-                incoming_empty = (v is None) or (is_str and not v.strip()) or (str(v) == "")
-                if current_val.strip() and incoming_empty:
-                    merged_data[k] = current_val
-                else:
-                    merged_data[k] = v
-            self._customDataPanel.setPairs(merged_data)
-        # Handle default kf key if custom data is empty or only has empty keys
-        kf_key = app.get("default_kf_key")
-        if kf_key:
-            current_keys = [k for k in self._customDataPanel.getKeys() if k]
-            if not current_keys:
-                self._customDataPanel.setPairs({kf_key: ""})
+        if custom_data:
+            self._customDataPanel.setPairs(custom_data)
+        else:
+            kf_key = app.get("default_kf_key", "token")
+            self._customDataPanel.setPairs({kf_key: ""})
         if "hash_field" in app:
             self._hashFieldName.setText(app["hash_field"])
         c = app.get("crypto", {})
@@ -615,18 +595,66 @@ class HashGenEditorTab(IMessageEditorTab):
             self._inlineCryptoField.setText(c["field"])
         # mode is managed automatically — do not set here
         if ep and "keys_order" in ep:
-            self._setKeysField(ep["keys_order"], False)
+            self._setKeysField(ep["keys_order"], False, app=app, ep=ep)
+        else:
+            self._syncCustomDataForSignOrder(app=app, ep=ep)
+
+    def _syncCustomDataForSignOrder(self, app=None, ep=None):
+        """Ensure Custom Data panel displays only custom data keys required by the current Sign Order."""
+        try:
+            body_text = self._bodyArea.getText().strip()
+            body_keys = set()
+            if body_text:
+                try:
+                    parsed = parse_body(body_text, "")
+                    body_keys = set(flatten_data(parsed).keys())
+                except Exception:
+                    pass
+
+            keys_str = self._keysField.getText().strip()
+            sign_keys = [k.strip() for k in keys_str.split(",") if k.strip()]
+            ignore_keys = set(["hash", "signature", "sign", "sig", "mac"])
+            required_custom_keys = [k for k in sign_keys if k not in body_keys and k.lower() not in ignore_keys]
+
+            current_pairs = self._customDataPanel.getPairs()
+
+            app_custom = app.get("custom_data", {}) if app else {}
+            ep_custom = ep.get("custom_data", {}) if ep else {}
+            merged_custom = merge_custom_data(app_custom, ep_custom)
+
+            if required_custom_keys:
+                new_pairs = {}
+                for k in required_custom_keys:
+                    if k in current_pairs and current_pairs[k].strip():
+                        new_pairs[k] = current_pairs[k]
+                    elif k in merged_custom and merged_custom[k]:
+                        new_pairs[k] = merged_custom[k]
+                    else:
+                        new_pairs[k] = ""
+                self._customDataPanel.setPairs(new_pairs)
+            else:
+                if not sign_keys and merged_custom:
+                    self._customDataPanel.setPairs(merged_custom)
+                elif not sign_keys:
+                    kf_key = app.get("default_kf_key", "token") if app else "token"
+                    self._customDataPanel.setPairs({kf_key: ""})
+                else:
+                    self._customDataPanel.setPairs({})
+        except Exception as e:
+            print("[CipherKit] Error syncing custom data for sign order: %s" % str(e))
 
     def _onKeysManualEdit(self):
         """Mark that the user has manually edited the keys order field."""
         if not self._keysLoadingProgrammatically:
             self._keysUserEdited = True
+            self._syncCustomDataForSignOrder()
 
-    def _setKeysField(self, value, user_edited=False):
+    def _setKeysField(self, value, user_edited=False, app=None, ep=None):
         """Update Sign Order without firing the manual-edit state accidentally."""
         self._keysLoadingProgrammatically = True
         try:
             self._keysField.setText(value or "")
+            self._syncCustomDataForSignOrder(app=app, ep=ep)
         finally:
             self._keysLoadingProgrammatically = False
             self._keysUserEdited = bool(user_edited)
@@ -724,7 +752,8 @@ class HashGenEditorTab(IMessageEditorTab):
 
             if selected_raw:
                 self._inlineKfKnownArea.setText(selected_raw)
-                if auto_search and not self._keysField.getText().strip():
+                has_empty_custom = any(not str(rv).strip() for rk, rv in self._customDataPanel.getPairs().items() if rk)
+                if auto_search and (not self._keysField.getText().strip() or has_empty_custom):
                     SwingUtilities.invokeLater(lambda: self._onInlineKfFind())
                 return True
         except Exception as e:
@@ -762,35 +791,92 @@ class HashGenEditorTab(IMessageEditorTab):
                 self._setKfStatus("No fields found", "error")
                 return
 
-            token_len = 64
-            auto_detect_note = ""
-            app_name = str(self._inlineSettingCombo.getSelectedItem()).strip().lower()
-            if app_name == "aba mobile" and self._customDataPanel._rows:
-                row_key, row_value = self._customDataPanel._rows[0]
-                if not row_key.getText().strip():
-                    row_key.setText("token")
-                first_key = row_key.getText().strip()
-                first_value = row_value.getText().strip()
-                if first_key and not first_value and len(known) > token_len:
-                    token_value = known[-token_len:]
-                    pairs[first_key] = token_value
-                    auto_detect_note = "[Auto-detect] %s : %s" % (first_key, token_value)
-                    row_value.setText(token_value)
-
             self._inlineKfFindBtn.setEnabled(False)
             self._setKfStatus("Searching...", "normal")
             values = dict((key, _safe_text(value)) for key, value in pairs.items())
             pairs_snapshot = dict(pairs)
             known_snapshot = known
-            note_snapshot = auto_detect_note
             outer = self
 
             def run_search():
                 try:
                     matches, visited, capped = find_key_orders(values, known_snapshot)
+
+                    # --- Auto-detect gap values (token/secret) from the match result ---
+                    # key_finder uses synthetic names "token"/"secret" for unknown segments.
+                    # Extract the actual segment from known_snapshot and fill the UI panel.
+                    auto_detect_notes = []
+                    gap_values = {}
+                    synthetic_gaps = []
+                    if matches:
+                        best_match = matches[0]
+                        SYNTHETIC = ("token",)
+                        # Only auto-fill if key is missing from values OR has an empty value
+                        synthetic_gaps = [
+                            k for k in best_match
+                            if k in SYNTHETIC and (k not in values or not str(values[k]).strip())
+                        ]
+                        if synthetic_gaps:
+                            # Reconstruct the segment positions
+                            pos = 0
+                            gap_values = {}  # synthetic_key -> actual_segment
+                            for k in best_match:
+                                val = str(values.get(k, '')).strip()
+                                if val:
+                                    if known_snapshot.startswith(val, pos):
+                                        pos += len(val)
+                                elif k in SYNTHETIC:
+                                    # Find where the next real non-empty key starts
+                                    found_next_idx = None
+                                    for nk in best_match[list(best_match).index(k) + 1:]:
+                                        nv = str(values.get(nk, '')).strip()
+                                        if nv:
+                                            fi = known_snapshot.find(nv, pos)
+                                            if fi != -1:
+                                                found_next_idx = fi
+                                                break
+                                    if found_next_idx is not None:
+                                        gap_values[k] = known_snapshot[pos:found_next_idx]
+                                        pos = found_next_idx
+                                    else:
+                                        gap_values[k] = known_snapshot[pos:]
+                                        pos = len(known_snapshot)
+                            # Fill the custom data panel rows for each synthetic gap
+                            for syn_key, seg_val in gap_values.items():
+                                if seg_val:
+                                    auto_detect_notes.append(
+                                        u"[Auto-detect] %s : %s" % (syn_key, seg_val)
+                                    )
+                                    # Update pairs so hash generation uses real value
+                                    values[syn_key] = seg_val
+
+                    def _apply_auto_detect_ui(gap_values_local, notes_local):
+                        """Must run on Swing EDT: fill the custom data panel with detected gaps."""
+                        for syn_key, seg_val in gap_values_local.items():
+                            # Find an existing row with this key name, or the first empty-value row
+                            filled = False
+                            for row_k, row_v in outer._customDataPanel._rows:
+                                rk = row_k.getText().strip()
+                                rv = row_v.getText().strip()
+                                if rk == syn_key:
+                                    if not rv:  # only auto-fill if currently empty
+                                        row_v.setText(seg_val)
+                                    filled = True
+                                    break
+                            if not filled:
+                                # Find first row with matching synthetic key name or an empty key
+                                for row_k, row_v in outer._customDataPanel._rows:
+                                    rk = row_k.getText().strip()
+                                    rv = row_v.getText().strip()
+                                    if not rk:
+                                        row_k.setText(syn_key)
+                                        row_v.setText(seg_val)
+                                        filled = True
+                                        break
+
                     lines = []
-                    if note_snapshot:
-                        lines.extend([note_snapshot, u"\u2500" * 52])
+                    if auto_detect_notes:
+                        lines.extend(auto_detect_notes + [u"\u2500" * 52])
                     if not matches:
                         lines += ["No match found.", ""]
                         found_keys = [
@@ -822,13 +908,19 @@ class HashGenEditorTab(IMessageEditorTab):
                         lines.extend(["", "(Note: search was capped at 100 matches to optimize performance)"])
                     result_text = u"\n".join([_safe_text(line) for line in lines])
 
+                    # Snapshot gap_values for the closure
+                    gap_values_snap = dict(gap_values)
+                    notes_snap = list(auto_detect_notes)
+
                     def finish_search():
                         outer._inlineKfFindBtn.setEnabled(True)
                         outer._lastKfMatches = matches
                         state = "found" if matches else "error"
                         outer._setKfStatus(result_text, state)
+                        if gap_values_snap:
+                            _apply_auto_detect_ui(gap_values_snap, notes_snap)
                         if matches:
-                            outer._onInlineApplyResult(note_snapshot, capped)
+                            outer._onInlineApplyResult("", capped)
 
                     SwingUtilities.invokeLater(finish_search)
                 except Exception as error:
@@ -942,8 +1034,10 @@ class HashGenEditorTab(IMessageEditorTab):
             self._outputTabs.setSelectedIndex(1)
 
     def update_tab_visibility(self):
-        show_crypto = self._extender.ext_settings.get("show_crypto", True)
+        show_crypto = self._extender.ext_settings.get("show_crypto", False)
         show_as = self._extender.ext_settings.get("show_app_setting", True)
+        show_ts = self._extender.ext_settings.get("show_get_timestamp", False)
+        show_run_hash = self._extender.ext_settings.get("show_run_hash", True)
 
         self._configTabs.removeAll()
         self._configTabs.addTab("Hash", self._hashConfigPanel)
@@ -951,6 +1045,18 @@ class HashGenEditorTab(IMessageEditorTab):
             self._configTabs.addTab("Crypto", self._cryptoConfigPanel)
         if show_as:
             self._configTabs.addTab("AppSetting", self._appSettingTabPanel)
+
+        if hasattr(self, '_runHashBtn') and self._runHashBtn:
+            self._runHashBtn.setVisible(show_run_hash)
+        if hasattr(self, '_inlineTsBtn') and self._inlineTsBtn:
+            self._inlineTsBtn.setVisible(show_ts)
+        if hasattr(self, '_hashBtnPanel') and self._hashBtnPanel:
+            self._hashBtnPanel.setVisible(show_run_hash or show_ts)
+
+    def _onManualRunHash(self, event=None):
+        """Manually compute hash and print to output (without modifying/injecting request body)."""
+        self._shouldCompareHash = True
+        self._onGenerate()
 
 
 
@@ -1022,9 +1128,10 @@ class HashGenEditorTab(IMessageEditorTab):
             path_changed = (new_request_path != getattr(self, '_requestPath', ''))
             self._requestPath = new_request_path
 
-            # Only reset Sign Order if switching to a DIFFERENT URL path
+            # Only reset Sign Order and Custom Data if switching to a DIFFERENT URL path
             if path_changed:
                 self._setKeysField("", False)
+                self._customDataPanel.setPairs({})
 
             # Try auto-load an app setting matching this URL path
             setting_loaded = self._tryLoadAppSetting()
@@ -1385,6 +1492,18 @@ class HashGenEditorTab(IMessageEditorTab):
                 lines.append("")
                 lines.append("No endpoint matches this request.")
                 lines.append("Set Sign Order above, then click Save Endpoint.")
+
+            endpoints = app.get("endpoints", {})
+            if endpoints:
+                lines.append("")
+                lines.append("Saved Endpoints (Alphabetical Order)")
+                lines.append("=" * 60)
+                lines.append("   %-25s | %s" % ("Endpoint URL Path", "Sign Order"))
+                lines.append("   " + "-" * 25 + "-+-" + "-" * 28)
+                for pat, ep in sorted(endpoints.items(), key=lambda x: str(x[0]).lower()):
+                    prefix = "-> " if pat == pattern else "   "
+                    lines.append("%s%-25s | %s" % (prefix, pat, ep.get("keys_order", "")))
+
             self._settingInfoArea.setText("\n".join(lines))
             self._settingInfoArea.setCaretPosition(0)
         except Exception as e:

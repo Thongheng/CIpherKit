@@ -171,7 +171,71 @@ class BatchMapperTests(unittest.TestCase):
             results = scan_proxy_history(callbacks, helpers, url_filter="*", method_filter="POST", log_path=temp_log)
             self.assertEqual(1, len(results))
             self.assertEqual("MATCHED", results[0]["status"])
+            self.assertEqual("Verified Match", results[0]["hash_match"])
             self.assertEqual(correct_raw, results[0]["raw_string"])
+        finally:
+            if os.path.exists(temp_log):
+                os.remove(temp_log)
+
+    def test_verified_match_when_all_keys_in_body(self):
+        import hashlib, tempfile, os
+        temp_log = tempfile.mktemp()
+        ts_val = "1786009402765"
+        raw_str = "01786009402765"
+        hash_val = hashlib.sha256(raw_str.encode('utf-8')).hexdigest()
+
+        with open(temp_log, "w") as f:
+            f.write(json.dumps({"ts": ts_val, "raw_string": raw_str}) + "\n")
+
+        body_json = json.dumps({
+            "aba_id": "0",
+            "ts": ts_val,
+            "hash": hash_val
+        })
+        raw_req = "POST /api/v3/test HTTP/1.1\r\nHost: mdev.ababank.com\r\nContent-Type: application/json\r\n\r\n" + body_json
+        dummy_item = DummyHttpRequestResponse(raw_req)
+
+        callbacks = DummyCallbacks([dummy_item])
+        helpers = DummyHelpers()
+
+        try:
+            results = scan_proxy_history(callbacks, helpers, url_filter="*", method_filter="POST", log_path=temp_log)
+            self.assertEqual(1, len(results))
+            self.assertEqual("Verified Match", results[0]["hash_match"])
+        finally:
+            if os.path.exists(temp_log):
+                os.remove(temp_log)
+
+    def test_requires_custom_data_when_middle_gap_unmatched(self):
+        import hashlib, tempfile, os
+        temp_log = tempfile.mktemp()
+        ts_val = "1786069442137"
+        otp_id = "f268246f-34d5-4b3a-a308-9969119cc9da"
+        raw_str = otp_id + "9999" + ts_val
+        hash_val = hashlib.sha1(raw_str.encode('utf-8')).hexdigest().upper()
+
+        with open(temp_log, "w") as f:
+            f.write(json.dumps({"ts": ts_val, "raw_string": raw_str}) + "\n")
+
+        body_json = json.dumps({
+            "otp_id": otp_id,
+            "type": 0,
+            "aba_id": "8000371",
+            "hash": hash_val,
+            "ts": ts_val
+        })
+        raw_req = "POST /api/v3/verify_otp3 HTTP/1.1\r\nHost: mdev.ababank.com\r\nContent-Type: application/json\r\n\r\n" + body_json
+        dummy_item = DummyHttpRequestResponse(raw_req)
+
+        callbacks = DummyCallbacks([dummy_item])
+        helpers = DummyHelpers()
+
+        try:
+            results = scan_proxy_history(callbacks, helpers, url_filter="*", method_filter="POST", log_path=temp_log)
+            self.assertEqual(1, len(results))
+            # Short gap "9999" (4 chars) is below TOKEN_MIN_LEN — DFS returns no match.
+            # batch_mapper produces NO_SIGN_MATCH: Frida log found but key order unknown.
+            self.assertEqual("NO_SIGN_MATCH", results[0]["status"])
         finally:
             if os.path.exists(temp_log):
                 os.remove(temp_log)

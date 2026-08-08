@@ -31,11 +31,13 @@ def find_key_orders(values, known, max_matches=100, max_visited=10000):
     matches = []
     visited = [0]
 
+    # Minimum length for an unknown segment to be treated as a static app token.
+    # Short gaps (e.g. "9999", 4 chars) are dynamic custom values — NOT tokens.
+    _TOKEN_MIN_LEN = 16
+
     def get_token_name(segment):
-        if not segment:
+        if not segment or len(segment) < _TOKEN_MIN_LEN:
             return None
-        if segment.endswith("="):
-            return "secret"
         return "token"
 
     def dfs(current_order, remaining_keys, current_pos):
@@ -48,6 +50,7 @@ def find_key_orders(values, known, max_matches=100, max_visited=10000):
                 matches.append(tuple(current_order))
             return
 
+        # 1. Direct matches at current_pos
         matched_any = False
         for key in list(remaining_keys):
             if visited[0] >= max_visited or len(matches) >= max_matches:
@@ -58,31 +61,91 @@ def find_key_orders(values, known, max_matches=100, max_visited=10000):
                 next_remaining = [k for k in remaining_keys if k != key]
                 dfs(current_order + [key], next_remaining, current_pos + len(val))
 
+        # 2. If no key matches directly at current_pos, explore middle or suffix gaps (only after first body key matched)
         if not matched_any and current_order and current_pos < len(known_str):
-            remaining_suffix = known_str[current_pos:]
-            custom_matched = False
+            gap_found = False
             for key in list(remaining_keys):
+                if visited[0] >= max_visited or len(matches) >= max_matches:
+                    return
                 val = clean_values[key]
-                if val and val == remaining_suffix:
-                    dfs(current_order + [key], [k for k in remaining_keys if k != key], len(known_str))
-                    custom_matched = True
-                    break
+                if not val:
+                    continue
+                find_idx = known_str.find(val, current_pos + 1)
+                if find_idx != -1:
+                    gap_segment = known_str[current_pos:find_idx]
+                    gap_key = get_token_name(gap_segment)
+                    if gap_key:
+                        gap_found = True
+                        next_remaining = [k for k in remaining_keys if k != key]
+                        dfs(current_order + [gap_key, key], next_remaining, find_idx + len(val))
 
-            if not custom_matched and len(remaining_suffix) >= 4:
-                token_key = get_token_name(remaining_suffix)
-                if token_key and token_key not in current_order:
-                    dfs(current_order + [token_key], remaining_keys, len(known_str))
+            if not gap_found:
+                remaining_suffix = known_str[current_pos:]
+                # Only treat suffix as a static token when no remaining body key
+                # appears anywhere ahead — otherwise we'd wrongly swallow body values.
+                any_key_ahead = any(
+                    clean_values[k] and clean_values[k] in remaining_suffix
+                    for k in remaining_keys
+                )
+                if not any_key_ahead and len(remaining_suffix) >= 1:
+                    token_key = get_token_name(remaining_suffix)
+                    if token_key:
+                        dfs(current_order + [token_key], remaining_keys, len(known_str))
 
     dfs([], keys, 0)
 
-    unique_matches = []
+    def verify_and_score(m):
+        pos = 0
+        real_keys = 0
+        real_bytes = 0
+        gaps = 0
+        for idx, k in enumerate(m):
+            if k in clean_values:
+                val = clean_values[k]
+                if not known_str.startswith(val, pos):
+                    return False, 0, 0, 0
+                pos += len(val)
+                real_keys += 1
+                real_bytes += len(val)
+            else:
+                gaps += 1
+                next_val = None
+                for next_k in m[idx + 1:]:
+                    if next_k in clean_values:
+                        next_val = clean_values[next_k]
+                        break
+                if next_val:
+                    next_pos = known_str.find(next_val, pos)
+                    if next_pos <= pos:
+                        return False, 0, 0, 0
+                    pos = next_pos
+                else:
+                    if pos >= len(known_str):
+                        return False, 0, 0, 0
+                    pos = len(known_str)
+        if pos == len(known_str):
+            return True, real_keys, real_bytes, gaps
+        return False, 0, 0, 0
+
+    valid_scored = []
     seen = set()
     for m in matches:
         if m not in seen:
             seen.add(m)
-            unique_matches.append(m)
+            valid, real_keys, real_bytes, gaps = verify_and_score(m)
+            if valid:
+                valid_scored.append((real_keys, real_bytes, -gaps, m))
+
+    valid_scored.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+    if valid_scored:
+        best_score = (valid_scored[0][0], valid_scored[0][1], valid_scored[0][2])
+        unique_matches = [item[3] for item in valid_scored if (item[0], item[1], item[2]) == best_score]
+    else:
+        unique_matches = []
 
     capped = len(unique_matches) >= max_matches or visited[0] >= max_visited
+    if visited[0] >= max_visited:
+        unique_matches = []
     return unique_matches, visited[0], capped
 
 

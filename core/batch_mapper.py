@@ -169,12 +169,28 @@ def process_http_item(helpers, http_item, log_path="/tmp/cipherkit_frida.log"):
             request_hash = str(pairs[h_field]).strip().lower()
             break
 
+    # Merge custom_data from AppSetting if available for this endpoint/app
+    custom_data = {}
+    try:
+        if callbacks and hasattr(callbacks, "app_setting_manager"):
+            _, app_cfg, _, ep_cfg = callbacks.app_setting_manager.resolve_for_url(url_path)
+            if app_cfg and app_cfg.get("custom_data"):
+                custom_data.update(app_cfg.get("custom_data"))
+            if ep_cfg and ep_cfg.get("custom_data"):
+                custom_data.update(ep_cfg.get("custom_data"))
+    except Exception:
+        pass
+
     values = dict((k, str(v)) for k, v in pairs.items())
+    for ck, cv in custom_data.items():
+        if ck not in values and cv:
+            values[ck] = str(cv)
 
     best_match = None
     fallback_match = None
 
-    import hashlib
+    import hashlib, hmac
+
     for raw_string, matched_ts, matched_via in candidates:
         matches, visited, capped = find_key_orders(values, raw_string)
         if matches:
@@ -191,10 +207,9 @@ def process_http_item(helpers, http_item, log_path="/tmp/cipherkit_frida.log"):
                 "pairs": pairs,
                 "body_str": body_str,
             }
-            if not fallback_match:
-                fallback_match = candidate_res
 
             # Hash verification check if request has a hash field
+            hash_match_status = "No Hash Field"
             if request_hash:
                 try:
                     raw_bytes = raw_string.encode('utf-8')
@@ -203,10 +218,31 @@ def process_http_item(helpers, http_item, log_path="/tmp/cipherkit_frida.log"):
                     md5_hex = hashlib.md5(raw_bytes).hexdigest().lower()
 
                     if request_hash in (sha256_hex, sha1_hex, md5_hex):
+                        missing_keys = [k for k in matches[0] if k not in values]
+                        if missing_keys:
+                            is_trailing_auto_token = (
+                                len(missing_keys) == 1 and
+                                missing_keys[0] == "token" and
+                                matches[0][-1] == missing_keys[0]
+                            )
+                            if is_trailing_auto_token:
+                                hash_match_status = "Verified Match"
+                            else:
+                                hash_match_status = "Requires Custom Data"
+                        else:
+                            hash_match_status = "Verified Match"
                         best_match = candidate_res
+                        candidate_res["hash_match"] = hash_match_status
                         break
+                    else:
+                        hash_match_status = "Requires Custom Data"
                 except Exception:
-                    pass
+                    hash_match_status = "Requires Custom Data"
+
+            candidate_res["hash_match"] = hash_match_status
+
+            if not fallback_match:
+                fallback_match = candidate_res
 
     selected = best_match or fallback_match
 

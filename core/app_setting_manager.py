@@ -84,6 +84,9 @@ class AppSettingManager(object):
 
     def save(self):
         try:
+            for app_name, app in self.app_settings.items():
+                if isinstance(app, dict) and "endpoints" in app and isinstance(app["endpoints"], dict):
+                    app["endpoints"] = dict(sorted(app["endpoints"].items(), key=lambda x: str(x[0]).lower()))
             with open(self.filepath, 'w') as f:
                 json.dump(self.app_settings, f, indent=2)
             return True

@@ -129,5 +129,14 @@ class MultipartSerializationTests(unittest.TestCase):
         self.assertEqual("E98DEEB8E861867F75C9592A1A2E83C58BBB486D", data.get("hash"))
 
 
+    def test_preserves_unquoted_json_types(self):
+        original = '{\n  "type": 0,\n  "name": "john",\n  "hash": "123"\n}'
+        data = parse_body(original, "application/json")
+        data["hash"] = "999"
+        res = serialize_body(data, original, "application/json")
+        self.assertIn('"type": 0,', res)
+        self.assertIn('"hash": "999"', res)
+
+
 if __name__ == "__main__":
     unittest.main()

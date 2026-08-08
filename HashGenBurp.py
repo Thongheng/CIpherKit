@@ -283,8 +283,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
                         if idx >= 0:
                             parent.setSelectedIndex(idx)
 
-                    self._tabbedPane.setSelectedIndex(0)
-                    print("[*] Request body sent to CipherKit Hash tab")
+                    print("[*] Request body sent from context menu")
 
     # -------------------------------------------------------------------------
     # Build the Main Tab UI
@@ -293,43 +292,14 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         self._mainPanel = JPanel(BorderLayout())
         self._mainPanel.setBorder(EmptyBorder(10, 10, 10, 10))
 
-
-        # Tabbed pane for Generator / Crypto / Editor
-        self._generatorPanel   = self._buildGeneratorTab()
-        self._cryptoPanel      = self._buildCryptoTab()
-        self._keyFinderPanel   = self._buildKeyFinderTab()
-        self._batchMapperPanel = BatchMapperTab(self)
-        self._settingPanel     = self._buildSettingTab()
+        self._generatorPanel        = self._buildGeneratorTab()   # initialises shared fields; not added as a tab
+        self._buildCryptoTab()                                    # initialises shared crypto fields; not added as a tab
+        self._buildKeyFinderTab()                                 # initialises shared KF fields; not added as a tab
+        self._batchMapperPanel      = BatchMapperTab(self)
+        self._settingPanel          = self._buildSettingTab()
+        self._extensionSettingPanel = self._buildExtensionSettingTab()
 
         self.update_tab_visibility()
-
-        # Global session-level settings bar (persists until Burp is restarted)
-        globalBar = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 2))
-        
-        globalTsBtn = JButton("Get Timestamp", actionPerformed=self._onGetTimestampGlobal)
-        globalBar.add(globalTsBtn)
-
-        # Active output mode: controls what the Hash tab's output shows
-        globalBar.add(JLabel("Hash tab output:"))
-        self._activeOutputCombo = JComboBox(["Hash", "Crypto"])
-        self._activeOutputCombo.setToolTipText(
-            "Hash: output shows the generated hash value\n"
-            "Crypto: output shows decrypted field value (editable, auto-encrypts on change)"
-        )
-        globalBar.add(self._activeOutputCombo)
-        # Global auto-encrypt toggle
-        self._globalAutoEncryptChk = JCheckBox("Auto-encrypt on edit", True)
-        self._globalAutoEncryptChk.setToolTipText(
-            "Session-wide toggle: uncheck to disable auto-encrypt in all CipherKit request tabs"
-        )
-        globalBar.add(self._globalAutoEncryptChk)
-        # Global uppercase hash toggle
-        self._globalUppercaseHashChk = JCheckBox("Uppercase hash", True)
-        self._globalUppercaseHashChk.setToolTipText(
-            "Session-wide toggle: check to force all generated hashes to uppercase"
-        )
-        globalBar.add(self._globalUppercaseHashChk)
-        self._mainPanel.add(globalBar, BorderLayout.SOUTH)
 
     # -------------------------------------------------------------------------
     # Generator Tab
@@ -338,152 +308,245 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
     # AppSetting Tab (main CipherKit)
     # -------------------------------------------------------------------------
     def _buildSettingTab(self):
-        # 1. Left Panel (App Settings Loader)
-        appPanel = JPanel(BorderLayout(0, 8))
-        appPanel.setBorder(EmptyBorder(0, 0, 0, 5))
+        mainPanel = JPanel(BorderLayout(0, 8))
+        mainPanel.setBorder(EmptyBorder(10, 10, 10, 10))
+
+        # Top Control Bar (App Setting selector + Hash Field + Default KF Key + Update Value)
+        topSectionPanel = JPanel(GridBagLayout())
+        topSectionPanel.setBorder(EmptyBorder(0, 0, 4, 0))
+        gbc = GridBagConstraints()
+        gbc.insets = Insets(3, 4, 3, 4)
+        gbc.anchor = GridBagConstraints.WEST
+        gbc.fill = GridBagConstraints.NONE
+
+        # Row 0: App Setting selector + Hash Field Name + Default KF Key
+        gbc.gridy = 0; gbc.gridx = 0
+        topSectionPanel.add(JLabel("App Setting:"), gbc)
         
-        topRow = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
-        topRow.add(JLabel("App Setting:"))
-        names = ["(none)"] + self.app_setting_manager.get_all_names()
+        all_app_names = self.app_setting_manager.get_all_names()
+        names = ["(none)"] + all_app_names
         self._settingCombo = JComboBox(names)
-        self._settingCombo.setPreferredSize(Dimension(200, 26))
+        self._settingCombo.setPreferredSize(Dimension(180, 26))
         self._settingCombo.addActionListener(lambda e: self._onSettingComboChange())
-        topRow.add(self._settingCombo)
         
+        default_app_name = self.ext_settings.get("default_app", "aba mobile")
+        if default_app_name in all_app_names:
+            self._settingCombo.setSelectedItem(default_app_name)
+        elif "aba mobile" in all_app_names:
+            self._settingCombo.setSelectedItem("aba mobile")
+        elif all_app_names:
+            self._settingCombo.setSelectedItem(all_app_names[0])
+
+        gbc.gridx = 1
+        topSectionPanel.add(self._settingCombo, gbc)
+
         _loadBtn = JButton("Load Config", actionPerformed=self._onSettingSelected)
-        topRow.add(_loadBtn)
-        appPanel.add(topRow, BorderLayout.NORTH)
+        _loadBtn.setPreferredSize(Dimension(110, 26))
+        gbc.gridx = 2
+        topSectionPanel.add(_loadBtn, gbc)
+
+        # Hash Field Name
+        gbc.gridx = 3; gbc.insets = Insets(3, 16, 3, 4)
+        topSectionPanel.add(JLabel("Hash Field:"), gbc)
         
-        self._settingSummaryArea = JTextArea()
-        self._settingSummaryArea.setEditable(False)
-        self._settingSummaryArea.setFont(Font("Monospaced", Font.PLAIN, 12))
-        self._settingSummaryArea.setBorder(EmptyBorder(5, 5, 5, 5))
-        appPanel.add(JScrollPane(self._settingSummaryArea), BorderLayout.CENTER)
-        
-        actRow = JPanel(FlowLayout(FlowLayout.RIGHT, 6, 0))
+        gbc.gridx = 4; gbc.insets = Insets(3, 4, 3, 4)
+        self._mainHashFieldName.setPreferredSize(Dimension(110, 26))
+        topSectionPanel.add(self._mainHashFieldName, gbc)
+
+        # Default KF Key
+        gbc.gridx = 5; gbc.insets = Insets(3, 12, 3, 4)
+        topSectionPanel.add(JLabel("Default KF Key:"), gbc)
+
+        gbc.gridx = 6; gbc.insets = Insets(3, 4, 3, 4)
+        self._mainDefaultKfKey = JTextField("token")
+        self._mainDefaultKfKey.setPreferredSize(Dimension(110, 26))
+        topSectionPanel.add(self._mainDefaultKfKey, gbc)
+
+        # Trailing filler for Row 0
+        gbc.gridx = 7; gbc.weightx = 1.0; gbc.fill = GridBagConstraints.HORIZONTAL
+        topSectionPanel.add(JPanel(), gbc)
+
+        # Row 1: Update Value form + Action Buttons
+        gbc.gridy = 1; gbc.gridx = 0; gbc.gridwidth = 1; gbc.weightx = 0.0; gbc.fill = GridBagConstraints.NONE; gbc.insets = Insets(3, 4, 3, 4)
+        topSectionPanel.add(JLabel("Update Value:"), gbc)
+
+        updateValRow = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0))
+        updateValRow.setOpaque(False)
+        self._settingCustomKeyField = JTextField("token")
+        self._settingCustomKeyField.setPreferredSize(Dimension(110, 26))
+        updateValRow.add(self._settingCustomKeyField)
+        updateValRow.add(JLabel(":"))
+        self._settingCustomValField = JTextField()
+        self._settingCustomValField.setPreferredSize(Dimension(160, 26))
+        updateValRow.add(self._settingCustomValField)
+        self._applyCustomValueBtn = JButton("Update", actionPerformed=self._onApplyCustomValue)
+        self._applyCustomValueBtn.setPreferredSize(Dimension(80, 26))
+        updateValRow.add(self._applyCustomValueBtn)
+
+        gbc.gridx = 1; gbc.gridwidth = 2
+        topSectionPanel.add(updateValRow, gbc)
+
+        # Action Buttons (Save New, Update Existing, Delete App)
+        actRow = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
+        actRow.setOpaque(False)
         self._saveNewSettingBtn   = JButton("Save New", actionPerformed=self._onSaveNewSetting)
         self._updateSettingBtn    = JButton("Update Existing", actionPerformed=self._onUpdateSetting)
         self._deleteSettingBtn    = JButton("Delete App", actionPerformed=self._onDeleteSetting)
         actRow.add(self._saveNewSettingBtn)
         actRow.add(self._updateSettingBtn)
         actRow.add(self._deleteSettingBtn)
-        appPanel.add(actRow, BorderLayout.SOUTH)
 
-        # 2. Right Panel (Extension Settings Options & Extended App Config)
-        extPanel = JPanel(GridBagLayout())
-        egbc = GridBagConstraints()
-        egbc.insets = Insets(0, 0, 10, 0)
-        egbc.anchor = GridBagConstraints.NORTHWEST
-        egbc.fill = GridBagConstraints.HORIZONTAL
-        egbc.weightx = 1.0
+        gbc.gridx = 3; gbc.gridwidth = 4; gbc.insets = Insets(3, 16, 3, 4)
+        topSectionPanel.add(actRow, gbc)
 
-        # Sub-panel A: Extension Options
-        optionsPanel = JPanel(GridBagLayout())
-        optionsPanel.setBorder(BorderFactory.createTitledBorder("Extension Options"))
-        ogbc = GridBagConstraints()
-        ogbc.insets = Insets(4, 6, 4, 6)
-        ogbc.anchor = GridBagConstraints.WEST
-        ogbc.fill = GridBagConstraints.HORIZONTAL
-        ogbc.weightx = 1.0
+        # Trailing filler for Row 1
+        gbc.gridx = 7; gbc.gridwidth = 1; gbc.weightx = 1.0; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.insets = Insets(3, 4, 3, 4)
+        topSectionPanel.add(JPanel(), gbc)
 
-        ogbc.gridy = 0; ogbc.gridx = 0
-        self._optShowCrypto = JCheckBox("Enable Crypto Tab", self.ext_settings.get("show_crypto", True))
-        optionsPanel.add(self._optShowCrypto, ogbc)
+        mainPanel.add(topSectionPanel, BorderLayout.NORTH)
 
-        ogbc.gridy = 1; ogbc.gridx = 0
+        # Center: Full-height Monospace Summary & Endpoints Table Area
+        self._settingSummaryArea = JTextArea()
+        self._settingSummaryArea.setEditable(False)
+        self._settingSummaryArea.setFont(Font("Monospaced", Font.PLAIN, 12))
+        self._settingSummaryArea.setBorder(EmptyBorder(5, 5, 5, 5))
+        mainPanel.add(JScrollPane(self._settingSummaryArea), BorderLayout.CENTER)
+
+        self._refreshSettingSummary()
+        return mainPanel
+
+    # -------------------------------------------------------------------------
+    # Extension Setting Tab (main CipherKit)
+    # -------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
+    # Extension Setting Tab (main CipherKit)
+    # -------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
+    # Extension Setting Tab (main CipherKit)
+    # -------------------------------------------------------------------------
+    def _buildExtensionSettingTab(self):
+        mainPanel = JPanel(BorderLayout(0, 10))
+        mainPanel.setBorder(EmptyBorder(12, 12, 12, 12))
+
+        boxPanel = JPanel(GridBagLayout())
+        gbc = GridBagConstraints()
+        gbc.insets = Insets(0, 0, 10, 0)
+        gbc.anchor = GridBagConstraints.NORTHWEST
+        gbc.fill = GridBagConstraints.HORIZONTAL
+        gbc.weightx = 1.0
+
+        # --- Section 1: Tab & Profile Settings ---
+        tabsPanel = JPanel(GridBagLayout())
+        tabsPanel.setBorder(BorderFactory.createTitledBorder("Tab & Profile Settings"))
+        tgbc = GridBagConstraints()
+        tgbc.insets = Insets(5, 12, 5, 12)
+        tgbc.anchor = GridBagConstraints.WEST
+        tgbc.fill = GridBagConstraints.NONE
+
+        tgbc.gridy = 0; tgbc.gridx = 0; tgbc.gridwidth = 2
         self._optShowAs = JCheckBox("Enable AppSetting Tab", self.ext_settings.get("show_app_setting", True))
-        optionsPanel.add(self._optShowAs, ogbc)
+        tabsPanel.add(self._optShowAs, tgbc)
 
-        ogbc.gridy = 2; ogbc.gridx = 0
+        tgbc.gridy = 1; tgbc.gridx = 0; tgbc.gridwidth = 2
         self._optShowBatch = JCheckBox("Enable Batch Mapper Tab", self.ext_settings.get("show_batch_mapper", True))
-        optionsPanel.add(self._optShowBatch, ogbc)
+        tabsPanel.add(self._optShowBatch, tgbc)
 
-        ogbc.gridy = 3; ogbc.gridx = 0
-        defaultAppPanel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0))
-        defaultAppPanel.setOpaque(False)
-        defaultAppPanel.add(JLabel("Default Load App:"))
+        tgbc.gridy = 2; tgbc.gridx = 0; tgbc.gridwidth = 2
+        self._optShowCrypto = JCheckBox("Enable Crypto Tab in Request Tab", self.ext_settings.get("show_crypto", False))
+        tabsPanel.add(self._optShowCrypto, tgbc)
+
+        tgbc.gridy = 3; tgbc.gridx = 0; tgbc.gridwidth = 1
+        tabsPanel.add(JLabel("Default Load App:"), tgbc)
+        tgbc.gridx = 1
         names = ["(none)"] + self.app_setting_manager.get_all_names()
         self._optDefaultAppCombo = JComboBox(names)
-        self._optDefaultAppCombo.setPreferredSize(Dimension(150, 26))
-        self._optDefaultAppCombo.setSelectedItem(self.ext_settings.get("default_app", "(none)"))
-        defaultAppPanel.add(self._optDefaultAppCombo)
-        optionsPanel.add(defaultAppPanel, ogbc)
+        self._optDefaultAppCombo.setPreferredSize(Dimension(180, 26))
+        self._optDefaultAppCombo.setSelectedItem(self.ext_settings.get("default_app", "aba mobile"))
+        tabsPanel.add(self._optDefaultAppCombo, tgbc)
 
-        ogbc.gridy = 4; ogbc.gridx = 0; ogbc.insets = Insets(10, 6, 4, 6)
-        saveOptBtn = JButton("Save Options", actionPerformed=self._onSaveExtensionSettings)
-        optionsPanel.add(saveOptBtn, ogbc)
+        # Trailing horizontal filler to push controls left
+        tgbc.gridy = 0; tgbc.gridx = 2; tgbc.gridwidth = 1; tgbc.gridheight = 4; tgbc.weightx = 1.0; tgbc.fill = GridBagConstraints.HORIZONTAL
+        tabsPanel.add(JPanel(), tgbc)
 
-        egbc.gridy = 0; egbc.gridx = 0
-        extPanel.add(optionsPanel, egbc)
+        gbc.gridy = 0; gbc.gridx = 0
+        boxPanel.add(tabsPanel, gbc)
 
-        # Sub-panel B: Extended App Config
-        extendedPanel = JPanel(GridBagLayout())
-        extendedPanel.setBorder(BorderFactory.createTitledBorder("Extended App Config"))
-        exgbc = GridBagConstraints()
-        exgbc.insets = Insets(4, 6, 4, 6)
-        exgbc.anchor = GridBagConstraints.WEST
+        # --- Section 2: Inline Request Editor Buttons ---
+        buttonsPanel = JPanel(GridBagLayout())
+        buttonsPanel.setBorder(BorderFactory.createTitledBorder("Inline Request Editor Buttons"))
+        bgbc = GridBagConstraints()
+        bgbc.insets = Insets(5, 12, 5, 12)
+        bgbc.anchor = GridBagConstraints.WEST
+        bgbc.fill = GridBagConstraints.NONE
 
-        # Row 0: Hash Field Name
-        exgbc.gridy = 0
-        exgbc.gridx = 0; exgbc.weightx = 0.0; exgbc.fill = GridBagConstraints.NONE
-        extendedPanel.add(JLabel("Hash Field Name:"), exgbc)
-        exgbc.gridx = 1; exgbc.weightx = 0.0; exgbc.fill = GridBagConstraints.NONE
-        self._mainHashFieldName.setPreferredSize(Dimension(150, 26))
-        extendedPanel.add(self._mainHashFieldName, exgbc)
+        bgbc.gridy = 0; bgbc.gridx = 0; bgbc.gridwidth = 2
+        self._optShowRunHashBtn = JCheckBox("Enable Run Hash Button", self.ext_settings.get("show_run_hash", True))
+        buttonsPanel.add(self._optShowRunHashBtn, bgbc)
 
-        # Row 1: Default KF Key
-        exgbc.gridy = 1
-        exgbc.gridx = 0; exgbc.weightx = 0.0; exgbc.fill = GridBagConstraints.NONE
-        extendedPanel.add(JLabel("Default KF Key:"), exgbc)
-        exgbc.gridx = 1; exgbc.weightx = 0.0; exgbc.fill = GridBagConstraints.NONE
-        self._mainDefaultKfKey = JTextField("token")
-        self._mainDefaultKfKey.setPreferredSize(Dimension(150, 26))
-        extendedPanel.add(self._mainDefaultKfKey, exgbc)
+        bgbc.gridy = 1; bgbc.gridx = 0; bgbc.gridwidth = 2
+        self._optShowTsBtn = JCheckBox("Enable Get Timestamp Button", self.ext_settings.get("show_get_timestamp", False))
+        buttonsPanel.add(self._optShowTsBtn, bgbc)
 
-        # Row 2: Update Value form
-        exgbc.gridy = 2
-        exgbc.gridx = 0; exgbc.weightx = 0.0; exgbc.fill = GridBagConstraints.NONE; exgbc.insets = Insets(10, 6, 4, 6)
-        extendedPanel.add(JLabel("Update Value:"), exgbc)
-        exgbc.gridx = 1; exgbc.weightx = 0.0; exgbc.fill = GridBagConstraints.NONE
-        self._settingCustomKeyField = JTextField("token")
-        self._settingCustomKeyField.setPreferredSize(Dimension(150, 26))
-        extendedPanel.add(self._settingCustomKeyField, exgbc)
+        # Trailing horizontal filler to push controls left
+        bgbc.gridy = 0; bgbc.gridx = 2; bgbc.gridwidth = 1; bgbc.gridheight = 2; bgbc.weightx = 1.0; bgbc.fill = GridBagConstraints.HORIZONTAL
+        buttonsPanel.add(JPanel(), bgbc)
 
-        exgbc.gridx = 2; exgbc.insets = Insets(10, 0, 4, 0)
-        extendedPanel.add(JLabel(":"), exgbc)
+        gbc.gridy = 1; gbc.gridx = 0
+        boxPanel.add(buttonsPanel, gbc)
 
-        exgbc.gridx = 3; exgbc.insets = Insets(10, 6, 4, 6)
-        self._settingCustomValField = JTextField()
-        self._settingCustomValField.setPreferredSize(Dimension(150, 26))
-        extendedPanel.add(self._settingCustomValField, exgbc)
+        # --- Section 3: Hash & Encryption Output Rules ---
+        sessionPanel = JPanel(GridBagLayout())
+        sessionPanel.setBorder(BorderFactory.createTitledBorder("Hash & Encryption Output Rules"))
+        sgbc = GridBagConstraints()
+        sgbc.insets = Insets(5, 12, 5, 12)
+        sgbc.anchor = GridBagConstraints.WEST
+        sgbc.fill = GridBagConstraints.NONE
 
-        exgbc.gridx = 4
-        self._applyCustomValueBtn = JButton("Update", actionPerformed=self._onApplyCustomValue)
-        extendedPanel.add(self._applyCustomValueBtn, exgbc)
+        # Row 0: Active Output Mode
+        sgbc.gridy = 0; sgbc.gridx = 0
+        sessionPanel.add(JLabel("Hash tab output:"), sgbc)
+        sgbc.gridx = 1
+        self._activeOutputCombo = JComboBox(["Hash", "Crypto"])
+        self._activeOutputCombo.setPreferredSize(Dimension(180, 26))
+        self._activeOutputCombo.setToolTipText(
+            "Hash: output shows the generated hash value\n"
+            "Crypto: output shows decrypted field value (editable, auto-encrypts on change)"
+        )
+        sessionPanel.add(self._activeOutputCombo, sgbc)
 
-        # Flexible trailing column absorbs unused width so the form stays left-aligned.
-        exgbc.gridx = 5; exgbc.gridy = 0; exgbc.gridheight = 3
-        exgbc.weightx = 1.0; exgbc.fill = GridBagConstraints.HORIZONTAL
-        exgbc.insets = Insets(0, 0, 0, 0)
-        extendedPanel.add(JPanel(), exgbc)
-        exgbc.gridheight = 1
+        # Row 1: Auto-encrypt on edit
+        sgbc.gridy = 1; sgbc.gridx = 0; sgbc.gridwidth = 2
+        self._globalAutoEncryptChk = JCheckBox("Auto-encrypt on edit", True)
+        sessionPanel.add(self._globalAutoEncryptChk, sgbc)
 
-        egbc.gridy = 1; egbc.gridx = 0
-        extPanel.add(extendedPanel, egbc)
+        # Row 2: Uppercase hash
+        sgbc.gridy = 2; sgbc.gridx = 0; sgbc.gridwidth = 2
+        self._globalUppercaseHashChk = JCheckBox("Uppercase hash", True)
+        sessionPanel.add(self._globalUppercaseHashChk, sgbc)
 
-        # Filler panel to push everything to top
-        egbc.gridy = 2; egbc.weighty = 1.0; egbc.fill = GridBagConstraints.BOTH
-        extPanel.add(JPanel(), egbc)
+        # Trailing horizontal filler to push controls left
+        sgbc.gridy = 0; sgbc.gridx = 2; sgbc.gridwidth = 1; sgbc.gridheight = 3; sgbc.weightx = 1.0; sgbc.fill = GridBagConstraints.HORIZONTAL
+        sessionPanel.add(JPanel(), sgbc)
 
-        # 3. Combine in Split Pane
-        settingSplit = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, appPanel, extPanel)
-        settingSplit.setResizeWeight(0.5)
-        
-        mainPanel = JPanel(BorderLayout())
-        mainPanel.setBorder(EmptyBorder(10, 10, 10, 10))
-        mainPanel.add(settingSplit, BorderLayout.CENTER)
-        
+        gbc.gridy = 2; gbc.gridx = 0
+        boxPanel.add(sessionPanel, gbc)
+
+        # --- Save Settings Button Row ---
+        btnRow = JPanel(FlowLayout(FlowLayout.LEFT, 12, 8))
+        saveOptBtn = JButton("Save Extension Settings", actionPerformed=self._onSaveExtensionSettings)
+        saveOptBtn.setPreferredSize(Dimension(180, 28))
+        btnRow.add(saveOptBtn)
+
+        gbc.gridy = 3; gbc.gridx = 0; gbc.insets = Insets(5, 0, 0, 0)
+        boxPanel.add(btnRow, gbc)
+
+        # Trailing vertical filler to anchor content nicely at top
+        gbc.gridy = 4; gbc.weighty = 1.0; gbc.fill = GridBagConstraints.BOTH
+        boxPanel.add(JPanel(), gbc)
+
+        mainPanel.add(boxPanel, BorderLayout.NORTH)
         return mainPanel
+
 
 
 
@@ -972,9 +1035,20 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
     def _refreshSettingCombo(self):
         """Refresh the main setting combo box with current app names."""
         names = self.app_setting_manager.get_all_names()
+        current = str(self._settingCombo.getSelectedItem()) if hasattr(self, '_settingCombo') and self._settingCombo else None
         HashGenEditorTab._refill_setting_combo(self._settingCombo, names)
         if hasattr(self, '_optDefaultAppCombo'):
             HashGenEditorTab._refill_setting_combo(self._optDefaultAppCombo, names)
+
+        if not current or current == "(none)":
+            default_name = self.ext_settings.get("default_app", "aba mobile")
+            if default_name in names:
+                self._settingCombo.setSelectedItem(default_name)
+            elif "aba mobile" in names:
+                self._settingCombo.setSelectedItem("aba mobile")
+            elif names:
+                self._settingCombo.setSelectedItem(names[0])
+        self._refreshSettingSummary()
 
     def _refreshSettingSummary(self):
         """Refresh the AppSetting tab summary text area with the selected app's config."""
@@ -1011,13 +1085,16 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             endpoints = app.get("endpoints", {})
             if endpoints:
                 lines.append("")
-                lines.append("Endpoints")
-                lines.append("-" * 44)
-                for pat, ep in endpoints.items():
+                lines.append("Endpoints (Alphabetical Order)")
+                lines.append("=" * 80)
+                lines.append("  %-32s | %-32s | %s" % ("Endpoint URL Path", "Sign Order", "Custom Data"))
+                lines.append("  " + "-" * 32 + "-+-" + "-" * 32 + "-+-" + "-" * 15)
+                for pat, ep in sorted(endpoints.items(), key=lambda x: str(x[0]).lower()):
+                    keys_order = ep.get("keys_order", "")
                     custom_str = ""
                     if "custom_data" in ep and ep["custom_data"]:
-                        custom_str = " [Custom: %s]" % ", ".join("%s=%s" % (k, v) for k, v in ep["custom_data"].items())
-                    lines.append("  %-30s  %s%s" % (pat, ep.get("keys_order", ""), custom_str))
+                        custom_str = ", ".join("%s=%s" % (k, v) for k, v in ep["custom_data"].items())
+                    lines.append("  %-32s | %-32s | %s" % (pat, keys_order, custom_str))
             else:
                 lines.append("")
                 lines.append("No endpoints saved yet.")
@@ -1229,8 +1306,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         # ---- Auto-detect trailing 64-char extra field ----
         _TOKEN_LEN = 64
         _auto_detect_note = ""
-        app_name = str(self._settingCombo.getSelectedItem()).strip().lower()
-        if app_name == "aba mobile" and self._kfAdditionalPanel._rows:
+        if self._kfAdditionalPanel._rows:
             first_key = self._kfAdditionalPanel._rows[0][0].getText().strip()
             first_val = self._kfAdditionalPanel._rows[0][1].getText().strip()
             # Only auto-detect if the first row (token) has a key but NO value
@@ -1546,18 +1622,25 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
     # Actions: Settings Option Toggle & Tab Visibility
     # -------------------------------------------------------------------------
     def _load_settings(self):
+        defaults = {
+            "show_crypto": False,
+            "show_app_setting": True,
+            "show_batch_mapper": True,
+            "show_get_timestamp": False,
+            "show_run_hash": True,
+            "default_app": "aba mobile"
+        }
         try:
             if os.path.exists(self.settings_path):
                 with open(self.settings_path, "r") as f:
-                    return json.load(f)
+                    loaded = json.load(f)
+                    defaults.update(loaded)
+                    if "show_crypto_v2" not in loaded:
+                        defaults["show_crypto"] = False
+                    return defaults
         except Exception as e:
             print("[CipherKit] Error loading settings: %s" % str(e))
-        return {
-            "show_crypto": True,
-            "show_app_setting": True,
-            "show_batch_mapper": True,
-            "default_app": "(none)"
-        }
+        return defaults
 
     def _save_settings(self):
         try:
@@ -1568,9 +1651,12 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
 
     def _onSaveExtensionSettings(self, event=None):
         try:
-            self.ext_settings["show_crypto"] = self._optShowCrypto.isSelected()
             self.ext_settings["show_app_setting"] = self._optShowAs.isSelected()
             self.ext_settings["show_batch_mapper"] = self._optShowBatch.isSelected()
+            self.ext_settings["show_crypto"] = self._optShowCrypto.isSelected()
+            self.ext_settings["show_crypto_v2"] = True
+            self.ext_settings["show_get_timestamp"] = self._optShowTsBtn.isSelected()
+            self.ext_settings["show_run_hash"] = self._optShowRunHashBtn.isSelected()
             self.ext_settings["default_app"] = str(self._optDefaultAppCombo.getSelectedItem())
             
             self._save_settings()
@@ -1589,20 +1675,16 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             JOptionPane.showMessageDialog(self._mainPanel, "Error saving settings: %s" % str(e), "Error", JOptionPane.ERROR_MESSAGE)
 
     def update_tab_visibility(self):
-        show_crypto = self.ext_settings.get("show_crypto", True)
         show_as = self.ext_settings.get("show_app_setting", True)
         show_batch = self.ext_settings.get("show_batch_mapper", True)
         
         # Re-add to suite tab if we want to change extender level tabs
         self._tabbedPane = JTabbedPane()
-        self._tabbedPane.addTab("Hash", self._generatorPanel)
-        if show_crypto:
-            self._tabbedPane.addTab("Crypto", self._cryptoPanel)
-        self._tabbedPane.addTab("Key Finder", self._keyFinderPanel)
         if show_batch:
             self._tabbedPane.addTab("Batch Mapper", self._batchMapperPanel)
         if show_as:
             self._tabbedPane.addTab("AppSetting", self._settingPanel)
+        self._tabbedPane.addTab("Extension Setting", self._extensionSettingPanel)
 
         # Clear and swap self._mainPanel center component
         self._mainPanel.removeAll()

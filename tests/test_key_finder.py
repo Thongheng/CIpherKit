@@ -36,7 +36,7 @@ class KeyOrderSearchTests(unittest.TestCase):
         matches, _, _ = find_key_orders(fields, known)
         self.assertEqual([("aba_id", "ts", "token")], matches)
 
-    def test_detects_secret_suffix(self):
+    def test_detects_token_suffix_for_base64_segment(self):
         fields = {
             "aba_id": "1435349",
             "pin": "123456",
@@ -44,7 +44,30 @@ class KeyOrderSearchTests(unittest.TestCase):
         }
         known = "14353491784273912798123456y2rNlFOX/fNiLJXieYmHTnJfZjZJWtTm6SeYrVEHzaM="
         matches, _, _ = find_key_orders(fields, known)
-        self.assertEqual([("aba_id", "ts", "pin", "secret")], matches)
+        self.assertEqual([("aba_id", "ts", "pin", "token")], matches)
+
+    def test_short_middle_gap_not_labelled_as_token(self):
+        # "9999" is only 4 chars — below TOKEN_MIN_LEN — so the DFS yields no match.
+        # batch_mapper will show "Requires Custom Data" for this endpoint.
+        fields = {
+            "otp_id": "f268246f-34d5-4b3a-a308-9969119cc9da",
+            "type": "0",
+            "aba_id": "8000371",
+            "ts": "1786069442137"
+        }
+        known = "f268246f-34d5-4b3a-a308-9969119cc9da99991786069442137"
+        matches, _, _ = find_key_orders(fields, known)
+        self.assertEqual([], matches)
+
+    def test_rejects_partial_string_mismatch(self):
+        fields = {
+            "aba_id": "4001205",
+            "ts": "1784273912798",
+        }
+        # String with unmatched prefix before body values
+        known = "UNMATCHED_PREFIX_40012051784273912798"
+        matches, _, _ = find_key_orders(fields, known)
+        self.assertEqual([], matches)
 
 class CompareGeneratedHashTests(unittest.TestCase):
     def test_compares_case_insensitively(self):

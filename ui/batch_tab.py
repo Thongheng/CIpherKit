@@ -105,8 +105,11 @@ class BatchMapperTab(JPanel):
         # ---------------------------------------------------------------------
         # Center Panel: Full Height Results Table (Clean layout)
         # ---------------------------------------------------------------------
+        # ---------------------------------------------------------------------
+        # Center Panel: Full Height Results Table (Clean layout)
+        # ---------------------------------------------------------------------
         self._tableModel = DefaultTableModel(
-            ["#", "Status", "Host / Domain", "Method", "Endpoint URL Path", "Detected Sign Order", "Matched TS"], 0
+            ["#", "Host / Domain", "Endpoint URL Path", "Detected Sign Order", "Hash Match"], 0
         )
         self._table = JTable(self._tableModel)
         self._table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
@@ -115,13 +118,11 @@ class BatchMapperTab(JPanel):
         self._table.getSelectionModel().addListSelectionListener(lambda e: self._onTableSelectionChange(e))
 
         # Column widths
-        self._table.getColumnModel().getColumn(0).setPreferredWidth(40)   # ID
-        self._table.getColumnModel().getColumn(1).setPreferredWidth(120)  # Status
-        self._table.getColumnModel().getColumn(2).setPreferredWidth(160)  # Host
-        self._table.getColumnModel().getColumn(3).setPreferredWidth(65)   # Method
-        self._table.getColumnModel().getColumn(4).setPreferredWidth(260)  # Endpoint
-        self._table.getColumnModel().getColumn(5).setPreferredWidth(320)  # Sign Order
-        self._table.getColumnModel().getColumn(6).setPreferredWidth(130)  # TS
+        self._table.getColumnModel().getColumn(0).setPreferredWidth(40)   # #
+        self._table.getColumnModel().getColumn(1).setPreferredWidth(180)  # Host
+        self._table.getColumnModel().getColumn(2).setPreferredWidth(280)  # Endpoint
+        self._table.getColumnModel().getColumn(3).setPreferredWidth(340)  # Sign Order
+        self._table.getColumnModel().getColumn(4).setPreferredWidth(120)  # Hash Match
 
         tableScroll = JScrollPane(self._table)
         tableScroll.setBorder(BorderFactory.createTitledBorder("Mapped Endpoint Sign Orders"))
@@ -179,38 +180,23 @@ class BatchMapperTab(JPanel):
                 )
                 
                 def update_swing():
-                    outer._scan_results = results
+                    matched_results = [res for res in results if res.get("status") == "MATCHED" and res.get("sign_order")]
+                    outer._scan_results = matched_results
                     outer._tableModel.setRowCount(0)
 
-                    matched_count = 0
-                    for idx, res in enumerate(results):
-                        status = res["status"]
-                        if status == "MATCHED":
-                            status_str = "MATCHED"
-                            matched_count += 1
-                        elif status == "NO_FRIDA_HOOK":
-                            status_str = "No Frida Log"
-                        elif status == "NO_SIGN_MATCH":
-                            status_str = "Order Mismatch"
-                        else:
-                            status_str = status
-
+                    for idx, res in enumerate(matched_results, 1):
                         outer._tableModel.addRow([
-                            res.get("req_id", idx + 1),
-                            status_str,
+                            idx,
                             res.get("host", ""),
-                            res["method"],
                             res["url_path"],
                             res["sign_order"],
-                            res["ts"]
+                            res.get("hash_match", "N/A")
                         ])
 
-                    msg = "Scan complete. Found %d unique endpoints (%d matched with Frida log)." % (
-                        len(results), matched_count
-                    )
+                    msg = "Scan complete. Discovered %d verified endpoint sign orders." % len(matched_results)
                     outer._statusLabel.setText(msg)
                     outer._scanBtn.setEnabled(True)
-                    if matched_count > 0:
+                    if len(matched_results) > 0:
                         outer._createAppSettingBtn.setEnabled(True)
 
                 SwingUtilities.invokeLater(update_swing)
@@ -239,7 +225,7 @@ class BatchMapperTab(JPanel):
         # Find selected row or save all matched
         row = self._table.getSelectedRow()
         target_results = [self._scan_results[row]] if (row >= 0 and row < len(self._scan_results)) else self._scan_results
-        matched_items = [r for r in target_results if r.get("sign_order")]
+        matched_items = [r for r in target_results if r.get("status") == "MATCHED" and r.get("sign_order")]
 
         if not matched_items:
             JOptionPane.showMessageDialog(self, "No endpoints with detected sign orders to save.", "Warning", JOptionPane.WARNING_MESSAGE)

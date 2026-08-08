@@ -323,11 +323,39 @@ def serialize_body(updated_data, original_body, content_type=""):
         else:
             raise ValueError("multipart/form-data body has no boundary; cannot re-serialize safely.")
 
-    # JSON fallback
+    # JSON handling
     try:
-        return json.dumps(updated_data, indent=2)
+        parsed = _try_parse_json(original_body)
+        if parsed is not None:
+            original_parsed = dict(parsed)
+            # Find changed key-value pairs
+            changed = {}
+            for k, v in updated_data.items():
+                if k not in original_parsed or str(original_parsed.get(k)) != str(v):
+                    changed[k] = v
+
+            res_body = original_body
+            for k, v in changed.items():
+                pattern_str = r'("' + re.escape(k) + r'"\s*:\s*)"([^"]*)"'
+                pattern_num = r'("' + re.escape(k) + r'"\s*:\s*)[^,\}\s\n]+'
+                if re.search(pattern_str, res_body):
+                    res_body = re.sub(pattern_str, r'\1"' + str(v).replace('\\', '\\\\').replace('"', '\\"') + '"', res_body, count=1)
+                elif re.search(pattern_num, res_body):
+                    val_repr = str(v)
+                    orig_val = original_parsed.get(k)
+                    if isinstance(orig_val, bool):
+                        val_repr = "true" if v and str(v).lower() != "false" else "false"
+                    elif isinstance(orig_val, (int, float)):
+                        val_repr = str(v)
+                    res_body = re.sub(pattern_num, r'\1' + val_repr, res_body, count=1)
+                else:
+                    parsed[k] = v
+                    res_body = json.dumps(parsed, indent=2)
+            return res_body
     except:
-        return original_body
+        pass
+
+    return original_body
 
 
 def flatten_data(data):
