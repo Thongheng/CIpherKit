@@ -11,7 +11,7 @@ from javax.swing.border import EmptyBorder
 from java.awt import BorderLayout, GridBagLayout, GridBagConstraints, Insets, Font, Color, FlowLayout
 import threading
 
-from core.batch_mapper import scan_proxy_history, get_history_hosts
+from core.batch_mapper import scan_proxy_history
 from ui.components.rounded_border import RoundedBorder, _roundedCompound
 
 
@@ -42,24 +42,11 @@ class BatchMapperTab(JPanel):
         gbc.insets = Insets(4, 4, 4, 4)
         gbc.fill = GridBagConstraints.HORIZONTAL
 
-        # Row 0: Target Domain & Refresh
+        # Row 0: URL Pattern & Frida Log Path
         gbc.gridy = 0; gbc.gridx = 0; gbc.weightx = 0.0
-        topPanel.add(JLabel("Target Domain:"), gbc)
-
-        gbc.gridx = 1; gbc.weightx = 0.35
-        self._domainCombo = JComboBox(["(All Domains)"])
-        self._domainCombo.setToolTipText("Select or filter by unique hostnames detected in Burp HTTP History")
-        topPanel.add(self._domainCombo, gbc)
-
-        gbc.gridx = 2; gbc.weightx = 0.0
-        self._refreshDomainsBtn = JButton("Refresh", actionPerformed=self._onRefreshDomains)
-        self._refreshDomainsBtn.setToolTipText("Scan HTTP History to populate target domains")
-        topPanel.add(self._refreshDomainsBtn, gbc)
-
-        gbc.gridx = 3; gbc.weightx = 0.0
         topPanel.add(JLabel("URL Pattern:"), gbc)
 
-        gbc.gridx = 4; gbc.weightx = 0.35
+        gbc.gridx = 1; gbc.weightx = 0.5
         self._urlFilterText = JTextField("*")
         self._urlFilterText.setToolTipText("Filter by path pattern (e.g. *api* or regex pattern)")
         topPanel.add(self._urlFilterText, gbc)
@@ -135,31 +122,12 @@ class BatchMapperTab(JPanel):
         self.add(tableScroll, BorderLayout.CENTER)
         self.add(self._statusLabel, BorderLayout.SOUTH)
 
-        # Populate domain dropdown
-        SwingUtilities.invokeLater(lambda: self._onRefreshDomains())
-
-    def _onRefreshDomains(self, event=None):
-        """Populate target domain dropdown from Burp Proxy History."""
-        try:
-            hosts = get_history_hosts(self._callbacks, self._helpers)
-            current = str(self._domainCombo.getSelectedItem()) if self._domainCombo.getItemCount() > 0 else "(All Domains)"
-            self._domainCombo.removeAllItems()
-            for h in hosts:
-                self._domainCombo.addItem(h)
-            if current in hosts:
-                self._domainCombo.setSelectedItem(current)
-            else:
-                self._domainCombo.setSelectedIndex(0)
-            self._statusLabel.setText("Refreshed target domains (%d domains found)." % (len(hosts) - 1))
-        except Exception as e:
-            print("[CipherKit] Error refreshing domains: %s" % str(e))
-
     def _onScanHistory(self, event=None):
         """Run history scanning in a background thread."""
         self._scanBtn.setEnabled(False)
         self._statusLabel.setText("Scanning Proxy HTTP History & Frida log...")
 
-        domain_filter = str(self._domainCombo.getSelectedItem()) if self._domainCombo.getItemCount() > 0 else "(All Domains)"
+        domain_filter = ""
         url_filter = self._urlFilterText.getText().strip()
         method_filter = self._methodFilterText.getText().strip()
         only_in_scope = self._inScopeChk.isSelected()
@@ -176,7 +144,8 @@ class BatchMapperTab(JPanel):
                     method_filter=method_filter,
                     only_in_scope=only_in_scope,
                     log_path=log_path,
-                    max_items=500
+                    max_items=500,
+                    app_setting_manager=outer._extender.app_setting_manager
                 )
                 
                 def update_swing():

@@ -35,48 +35,27 @@ class SnippetManager(object):
 
     def create_default_snippets(self):
         default_code = (
-            "def generate(payload, passcode, custom_data=None, key_order=None):\n"
-            "    import hmac\n"
+            "def generate(payload, passcode=None, custom_data=None, key_order=None):\n"
             "    import hashlib\n"
             "\n"
-            "    # payload = merged dict of custom_data + request body JSON\n"
-            "    # custom_data = dict {key_name: value} - keys are in payload too\n"
-            "\n"
-            "    # 1. Parse Passcode\n"
-            "    if len(passcode) < 16:\n"
-            "        raise ValueError(\"PassCode must be at least 16 characters long.\")\n"
-            "    iv = passcode[-16:]\n"
-            "    key = passcode[:-16]\n"
-            "\n"
-            "    # 2. Determine Keys to Sign\n"
-            "    keys_to_sign = []\n"
             "    if key_order:\n"
             "        keys_to_sign = key_order\n"
             "    else:\n"
             "        keys_to_sign = [k for k in payload.keys() if k != 'hash']\n"
             "\n"
-            "    # 3. Concat Values (payload has custom_data keys merged in)\n"
             "    concat_str = \"\"\n"
             "    for k in keys_to_sign:\n"
             "        val = payload.get(k)\n"
             "        if val is None: val = \"\"\n"
             "        concat_str += str(val)\n"
             "\n"
-            "    # 4. Create Message\n"
-            "    message = iv + concat_str\n"
-            "\n"
-            "    # 5. Sign\n"
-            "    signature = hmac.new(\n"
-            "        key.encode('utf-8') if isinstance(key, str) else key,\n"
-            "        message.encode('utf-8') if isinstance(message, str) else message,\n"
-            "        hashlib.sha256\n"
-            "    ).hexdigest()\n"
-            "\n"
-            "    return signature"
+            "    digest = hashlib.sha1(concat_str.encode('utf-8')).hexdigest()\n"
+            "    return digest\n"
         )
-        self.snippets["ABA HMAC SHA256"] = {
+        self.snippets["SHA-1"] = {
             "code": default_code,
-            "description": "Original ABA HMAC-SHA256 Implementation"
+            "requires_key": False,
+            "description": "Plain SHA-1 hash of concatenated payload values."
         }
         self.save_snippets()
 

@@ -6,12 +6,13 @@ from javax.swing.border import EmptyBorder
 from java.awt import (
     BorderLayout, Dimension, FlowLayout, Component
 )
+from ui.components.listeners import PayloadDocumentListener
 
 class CustomDataPanel(JPanel):
     """
     A panel that holds one or more key:value custom data fields.
     Each row: [key_name] : [value] [+] [-]
-    getPairs() returns {key: value} dict used by CryptoEngine.
+    getPairs() returns a {key: value} dict of the entered custom data.
     """
 
     def __init__(self, label_font=None, field_font=None):
@@ -123,12 +124,17 @@ class CustomDataPanel(JPanel):
 class CompactCustomDataPanel(JPanel):
     """Compact key:value custom data panel for the inline request editor tab."""
 
-    def __init__(self, font=None):
+    def __init__(self, font=None, on_change=None):
         JPanel.__init__(self)
         self.setLayout(BoxLayout(self, BoxLayout.Y_AXIS))
         self._font = font  # None = inherit default LaF font
+        self._on_change = on_change  # called on direct user edits, NOT on setPairs()
         self._rows = []
         self._addFieldRow()
+
+    def _fireChange(self):
+        if self._on_change:
+            self._on_change()
 
     def _addFieldRow(self, key="", value=""):
         row = JPanel(BorderLayout(2, 0))
@@ -138,11 +144,15 @@ class CompactCustomDataPanel(JPanel):
         keyField = JTextField(key)
         keyField.setPreferredSize(Dimension(70, 20))
         keyField.setToolTipText("Key name (use in Keys Order)")
+        if self._on_change:
+            keyField.getDocument().addDocumentListener(PayloadDocumentListener(self._fireChange))
 
         sep = JLabel(":")
         sep.setBorder(EmptyBorder(0, 2, 0, 2))
 
         valueField = JTextField(value)
+        if self._on_change:
+            valueField.getDocument().addDocumentListener(PayloadDocumentListener(self._fireChange))
 
         # key | ":" in a fixed-width panel, value takes the rest
         keyWithSep = JPanel(BorderLayout(0, 0))
@@ -197,6 +207,7 @@ class CompactCustomDataPanel(JPanel):
                 self.remove(nxt)
         self.revalidate()
         self.repaint()
+        self._fireChange()
 
     def getPairs(self):
         result = {}

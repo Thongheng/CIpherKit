@@ -2,7 +2,9 @@
 from __future__ import print_function
 import re
 from core.body_parser import parse_body, flatten_data
-from core.key_finder import fetch_frida_hook, fetch_all_frida_candidates, find_key_orders
+from core.key_finder import (
+    fetch_frida_hook, fetch_all_frida_candidates, find_key_orders, DEFAULT_TOKEN_LEN,
+)
 from core.utils import _extract_request_path
 
 
@@ -52,30 +54,35 @@ def matches_method_filter(method, method_filter):
     return str(method).upper() in allowed
 
 
-def get_history_hosts(callbacks, helpers):
-    """Scan Burp Proxy History and return a list of unique hostnames."""
-    hosts = set()
+ALLOWED_ABA_DOMAINS = ["mdev.ababank.com", "m-pre.ababank.com", "mapp.ababank.com"]
+
+
+def get_history_hosts(callbacks=None, helpers=None):
+    """Scan Burp Proxy History and return target ABA domains."""
+    hosts = set(ALLOWED_ABA_DOMAINS)
     try:
-        history = callbacks.getProxyHistory()
-        if history:
-            for item in history:
-                if not item:
-                    continue
-                try:
-                    req_info = helpers.analyzeRequest(item)
-                    if req_info.getUrl():
-                        host = req_info.getUrl().getHost()
-                        if host:
-                            hosts.add(host)
-                except Exception:
-                    pass
+        if callbacks and helpers:
+            history = callbacks.getProxyHistory()
+            if history:
+                for item in history:
+                    if not item:
+                        continue
+                    try:
+                        req_info = helpers.analyzeRequest(item)
+                        if req_info and req_info.getUrl():
+                            host = req_info.getUrl().getHost()
+                            if host and host in ALLOWED_ABA_DOMAINS:
+                                hosts.add(host)
+                    except Exception:
+                        pass
     except Exception as e:
         print("[CipherKit] Error fetching history hosts: %s" % str(e))
 
-    return ["(All Domains)"] + sorted(list(hosts))
+    return ["(All Domains)"] + [d for d in ALLOWED_ABA_DOMAINS if d in hosts]
 
 
-def process_http_item(helpers, http_item, log_path="/tmp/cipherkit_frida.log"):
+def process_http_item(helpers, http_item, log_path="/tmp/cipherkit_frida.log",
+                       app_setting_manager=None, token_len=DEFAULT_TOKEN_LEN):
     """
     Analyze a single IHttpRequestResponse item against Frida logs and return sign order result.
     """
@@ -171,15 +178,15 @@ def process_http_item(helpers, http_item, log_path="/tmp/cipherkit_frida.log"):
 
     # Merge custom_data from AppSetting if available for this endpoint/app
     custom_data = {}
-    try:
-        if callbacks and hasattr(callbacks, "app_setting_manager"):
-            _, app_cfg, _, ep_cfg = callbacks.app_setting_manager.resolve_for_url(url_path)
+    if app_setting_manager is not None:
+        try:
+            _, app_cfg, _, ep_cfg = app_setting_manager.resolve_for_url(url_path)
             if app_cfg and app_cfg.get("custom_data"):
                 custom_data.update(app_cfg.get("custom_data"))
             if ep_cfg and ep_cfg.get("custom_data"):
                 custom_data.update(ep_cfg.get("custom_data"))
-    except Exception:
-        pass
+        except Exception:
+            pass
 
     values = dict((k, str(v)) for k, v in pairs.items())
     for ck, cv in custom_data.items():
@@ -192,7 +199,7 @@ def process_http_item(helpers, http_item, log_path="/tmp/cipherkit_frida.log"):
     import hashlib, hmac
 
     for raw_string, matched_ts, matched_via in candidates:
-        matches, visited, capped = find_key_orders(values, raw_string)
+        matches, visited, capped = find_key_orders(values, raw_string, token_len=token_len)
         if matches:
             sign_order = ", ".join(matches[0])
             candidate_res = {
@@ -266,28 +273,32 @@ def process_http_item(helpers, http_item, log_path="/tmp/cipherkit_frida.log"):
 
 
 def scan_proxy_history(callbacks, helpers, domain_filter="(All Domains)", url_filter="", method_filter="POST, PUT",
-                       only_in_scope=False, log_path="/tmp/cipherkit_frida.log", max_items=500):
+                       only_in_scope=False, log_path="/tmp/cipherkit_frida.log", max_items=500,
+                       app_setting_manager=None):
     """
     Scan Burp's Proxy HTTP History, filter items, match against Frida logs,
     and return unique endpoint sign-order mapping results.
+    Picks the request with a Verified Match (hash match) when duplicate requests exist for an endpoint.
     """
     history = callbacks.getProxyHistory()
     if not history:
         return []
 
-    results = []
-    seen_endpoints = set()
-
     domain_filter = (domain_filter or "").strip()
     if domain_filter == "(All Domains)":
         domain_filter = ""
 
-    # Iterate backwards (newest requests first)
-    count = 0
+    endpoint_map = {}   # endpoint_key -> res
+    endpoint_order = [] # preserve discovery order (newest first)
+
     total = len(history)
     for i in range(total - 1, -1, -1):
-        if count >= max_items:
-            break
+        if len(endpoint_map) >= max_items:
+            all_verified = all(
+                r.get("hash_match") == "Verified Match" for r in endpoint_map.values()
+            )
+            if all_verified:
+                break
 
         item = history[i]
         if not item:
@@ -313,19 +324,38 @@ def scan_proxy_history(callbacks, helpers, domain_filter="(All Domains)", url_fi
             url_path = _extract_request_path(req_info)
             endpoint_key = (host.lower(), method.upper(), url_path)
 
-            # Deduplicate endpoints: take the latest request only (iterating newest to oldest)
-            if endpoint_key in seen_endpoints:
-                continue
-            seen_endpoints.add(endpoint_key)
+            # If we already have a Verified Match for this endpoint, skip older attempts for this endpoint
+            if endpoint_key in endpoint_map:
+                existing = endpoint_map[endpoint_key]
+                if existing.get("hash_match") == "Verified Match":
+                    continue
 
             # Process single HTTP item
-            res = process_http_item(helpers, item, log_path=log_path)
-            if res:
-                res["req_id"] = i + 1
-                results.append(res)
-            count += 1
+            res = process_http_item(helpers, item, log_path=log_path, app_setting_manager=app_setting_manager)
+            if not res:
+                continue
+
+            res["req_id"] = i + 1
+
+            if endpoint_key not in endpoint_map:
+                endpoint_map[endpoint_key] = res
+                endpoint_order.append(endpoint_key)
+            else:
+                existing = endpoint_map[endpoint_key]
+                def _rank(r):
+                    if r.get("hash_match") == "Verified Match":
+                        return 3
+                    if r.get("status") == "MATCHED":
+                        return 2
+                    if r.get("status") in ("NO_SIGN_MATCH", "NO_FRIDA_HOOK"):
+                        return 1
+                    return 0
+
+                if _rank(res) > _rank(existing):
+                    endpoint_map[endpoint_key] = res
+
         except Exception as e:
             print("[CipherKit] Batch Mapper error processing request #%d: %s" % (i + 1, str(e)))
 
-    return results
+    return [endpoint_map[k] for k in endpoint_order if k in endpoint_map]
 
