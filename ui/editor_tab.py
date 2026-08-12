@@ -3,7 +3,7 @@ from __future__ import print_function
 import json, time, traceback
 from javax.swing import (
     JPanel, JLabel, JTextField, JTextArea, JTextPane, JButton, JComboBox, JCheckBox,
-    JScrollPane, JTabbedPane, JSplitPane, JOptionPane
+    JScrollPane, JTabbedPane, JSplitPane, JOptionPane, SwingUtilities
 )
 from javax.swing.border import EmptyBorder
 from java.awt import (
@@ -30,6 +30,7 @@ from core.key_finder import (
     should_render_hash_output, strip_hash_comparison,
     fetch_all_frida_candidates, extract_gap_value,
 )
+from core.token_gen import generate_fresh_login
 from ui.components.rounded_border import RoundedBorder
 from ui.components.custom_data_panel import CompactCustomDataPanel
 from ui.components.listeners import PayloadDocumentListener
@@ -43,7 +44,9 @@ class HashGenEditorTab(IMessageEditorTab):
     """
 
     def __init__(self, extender, controller, editable):
+        print("[CipherKit][DEBUG] HashGenEditorTab.__init__: new tab instance created, id=%s" % id(self))
         self._extender = extender
+        self._controller = controller
         self._helpers  = extender._helpers
         self._isRequestContext = False
         self._currentMessage = None
@@ -119,6 +122,14 @@ class HashGenEditorTab(IMessageEditorTab):
 
         actionRow = JPanel(BorderLayout(6, 0))
         actionRow.add(self._inlineSettingStatus, BorderLayout.WEST)
+
+        self._refreshTokenBtn = JButton("Refresh Token", actionPerformed=self._onRefreshToken)
+        self._refreshTokenBtn.setToolTipText(
+            "Perform a live login3 request using the saved Token Config "
+            "and update Custom Data with the resulting session token"
+        )
+        actionRow.add(self._refreshTokenBtn, BorderLayout.EAST)
+
         headerPanel.add(actionRow, hgbc)
         hgbc.gridwidth = 1  # restore
 
@@ -393,12 +404,23 @@ class HashGenEditorTab(IMessageEditorTab):
         that isn't already present in the body (the secret token) with the value
         recovered from that log entry. Deterministic \u2014 no brute-force search,
         since Sign Order is already known once the endpoint's profile is saved.
-        Overwrites the existing custom-data value: a different ts is a genuinely
-        different real request with its own correct token, so there's no
-        ambiguity to preserve."""
+
+        Runs at most once per opened message (gated by _tokenSyncedThisView,
+        reset in setMessage): editing ts afterwards (e.g. testing a new value
+        by hand) must NOT re-trigger this and try to overwrite a still-valid
+        token with a "no match" no-op \u2014 the token doesn't change per-request,
+        only a live Refresh Token or opening a different message should touch it.
+        """
+        already_synced = getattr(self, '_tokenSyncedThisView', False)
+        print("[CipherKit][DEBUG] _syncTokenFromFridaLog called, already_synced=%s" % already_synced)
+        if already_synced:
+            print("[CipherKit][DEBUG] _syncTokenFromFridaLog: gate already set, skipping")
+            return
+        self._tokenSyncedThisView = True
         try:
             body = self._bodyArea.getText().strip()
             if not body:
+                print("[CipherKit][DEBUG] _syncTokenFromFridaLog: empty body, skipping")
                 return
 
             ct = getattr(self, '_contentType', '')
@@ -407,21 +429,26 @@ class HashGenEditorTab(IMessageEditorTab):
 
             sign_keys = [k.strip() for k in self._keysField.getText().strip().split(",") if k.strip()]
             if not sign_keys:
+                print("[CipherKit][DEBUG] _syncTokenFromFridaLog: no Sign Order keys, skipping")
                 return
 
             ignore_keys = set(["hash", "signature", "sign", "sig", "mac"])
             gap_keys = [k for k in sign_keys if k not in body_values and k.lower() not in ignore_keys]
             if not gap_keys:
+                print("[CipherKit][DEBUG] _syncTokenFromFridaLog: every signed field already in body, nothing to look up")
                 return  # every signed field is already in the body \u2014 nothing to look up
             gap_key = gap_keys[0]
 
             ts_val = (body_values.get('ts') or body_values.get('timestamp')
                       or body_values.get('time') or body_values.get('req_time'))
             if not ts_val:
+                print("[CipherKit][DEBUG] _syncTokenFromFridaLog: no ts-like field in body, skipping")
                 return
 
+            print("[CipherKit][DEBUG] _syncTokenFromFridaLog: gap_key=%s ts_val=%s" % (gap_key, ts_val))
             candidates = fetch_all_frida_candidates(ts_val=ts_val, values=body_values)
             if not candidates:
+                print("[CipherKit][DEBUG] _syncTokenFromFridaLog: no Frida candidates for ts=%s" % ts_val)
                 self._setKfResultStyled("No Frida log entry for ts=%s" % ts_val)
                 return
 
@@ -439,6 +466,174 @@ class HashGenEditorTab(IMessageEditorTab):
             self._setKfResultStyled("%s recovered from Frida log (ts=%s)" % (gap_key, ts_val))
         except Exception as e:
             print("[CipherKit] Frida token lookup error: %s" % str(e))
+
+    def _onRefreshToken(self, event=None):
+        """Perform a live login3 request (using the Token Config profile matching
+        this request's host, from the main tab's AppSetting view) to obtain a
+        fresh, server-valid session token, then apply it to Custom Data under
+        whichever key the current Sign Order actually expects it under (not
+        always literally "token" — e.g. login3 itself uses "secret"). Runs the
+        network call on a worker thread."""
+        print("[CipherKit][DEBUG] _onRefreshToken: click received")
+        try:
+            if not self._currentMessage:
+                print("[CipherKit][DEBUG] _onRefreshToken: no _currentMessage loaded, aborting")
+                self._setKfResultStyled("No request loaded — open a request in this tab first.")
+                self._outputTabs.setSelectedIndex(1)
+                return
+
+            print("[CipherKit][DEBUG] _onRefreshToken: about to resolve host via controller.getHttpService()")
+            http_service = self._controller.getHttpService() if self._controller else None
+            if not http_service:
+                print("[CipherKit][DEBUG] _onRefreshToken: no HttpService from controller, aborting")
+                self._setKfResultStyled("No request loaded — open a request in this tab first.")
+                self._outputTabs.setSelectedIndex(1)
+                return
+            host = http_service.getHost()
+            print("[CipherKit][DEBUG] _onRefreshToken: host=%s" % host)
+
+            profiles = (self._extender.app_setting_manager.get_app("ABA Mobile") or {}).get(
+                "token_gen_profiles", {}
+            )
+            print("[CipherKit][DEBUG] _onRefreshToken: token_gen_profiles=%s" % sorted(profiles.keys()))
+            cfg = None
+            for pcfg in profiles.values():
+                if str(pcfg.get("host", "")).strip().lower() == str(host).strip().lower():
+                    cfg = pcfg
+                    break
+            if not cfg:
+                available = ", ".join(sorted(profiles.keys())) if profiles else "(none saved)"
+                print("[CipherKit][DEBUG] _onRefreshToken: no profile matches host '%s', aborting" % host)
+                self._setKfResultStyled(
+                    u"No Token Config profile matches host '%s'. Saved profiles: %s. "
+                    u"Add/edit one on the main tab's AppSetting (ABA Mobile) view." % (host, available)
+                )
+                self._outputTabs.setSelectedIndex(1)
+                return
+
+            aba_id = cfg.get("aba_id", "").strip()
+            device_id = cfg.get("device_id", "").strip()
+            pin_hash = cfg.get("pin_hash", "").strip()
+            secret = cfg.get("secret", "").strip()
+            if not (aba_id and device_id and pin_hash and secret):
+                print("[CipherKit][DEBUG] _onRefreshToken: profile for host '%s' incomplete, aborting" % host)
+                self._setKfResultStyled(
+                    u"Token Config profile for host '%s' is incomplete — fill in "
+                    u"aba_id/device_id/pin_hash/secret on the main tab's AppSetting "
+                    u"(ABA Mobile) view." % host
+                )
+                self._outputTabs.setSelectedIndex(1)
+                return
+
+            # Resolve which Custom Data key this endpoint's Sign Order actually
+            # expects the generated value under (usually "token", but not always).
+            sign_keys = [k.strip() for k in self._keysField.getText().strip().split(",") if k.strip()]
+            ignore_keys = set(["hash", "signature", "sign", "sig", "mac"])
+            body_text = self._bodyArea.getText().strip()
+            ct = getattr(self, '_contentType', '')
+            body_values = flatten_data(parse_body(body_text, ct)) if body_text else {}
+            gap_keys = [k for k in sign_keys if k not in body_values and k.lower() not in ignore_keys]
+            gap_key = gap_keys[0] if gap_keys else "token"
+
+            ts = str(int(time.time() * 1000))
+            hash_val, second_hash, token = generate_fresh_login(aba_id, device_id, ts, pin_hash, secret)
+
+            body_str = json.dumps({
+                "aba_id": aba_id, "device_id": device_id, "ts": ts,
+                "pin": pin_hash, "hash": hash_val,
+                "second_hash": second_hash, "secret_word": "", "dtoken": "",
+            })
+            headers = [
+                "POST /api/v3/login3 HTTP/1.1",
+                "Host: %s" % host,
+                "Os: android",
+                "Lang: en",
+                "Os-Version: android-30",
+                "Client-Version: 2975",
+                "Device-Model: samsung SM-N950F",
+                "User-Agent: ababank/5.0.0.2975-4001205",
+                "Content-Type: application/json; charset=UTF-8",
+            ]
+            body_bytes = self._helpers.stringToBytes(body_str)
+            request_bytes = self._helpers.buildHttpMessage(headers, body_bytes)
+            service = self._helpers.buildHttpService(host, 443, True)
+
+            print("[CipherKit][DEBUG] _onRefreshToken: gap_key=%s ts=%s, about to update button + start worker" % (gap_key, ts))
+            btn = self._refreshTokenBtn
+            original_text = btn.getText()
+            btn.setText("Refreshing...")
+            btn.setEnabled(False)
+
+            outer = self
+            callbacks = self._extender._callbacks
+
+            def run_request():
+                print("[CipherKit][DEBUG] _onRefreshToken.run_request: worker thread started")
+                success = False
+                detail = ""
+                try:
+                    response_msg = callbacks.makeHttpRequest(service, request_bytes)
+                    response_bytes = response_msg.getResponse() if response_msg else None
+                    if response_bytes is None:
+                        detail = "No response from %s" % host
+                    else:
+                        analyzed_resp = outer._helpers.analyzeResponse(response_bytes)
+                        resp_body = outer._helpers.bytesToString(
+                            response_bytes[analyzed_resp.getBodyOffset():]
+                        )
+                        try:
+                            resp_json = json.loads(resp_body)
+                        except Exception:
+                            resp_json = None
+                        status = resp_json.get("status") if isinstance(resp_json, dict) else None
+                        if isinstance(status, dict):
+                            status = status.get("code")
+                        success = (status == "OK")
+                        if not success:
+                            detail = resp_body[:300]
+
+                    def finish():
+                        btn.setText(original_text)
+                        btn.setEnabled(True)
+                        if success:
+                            current_pairs = outer._customDataPanel.getPairs()
+                            current_pairs[gap_key] = token
+                            outer._customDataPanel.setPairs(current_pairs)
+                            outer._setKfResultStyled(
+                                "Fresh %s obtained via live login3 on %s (ts=%s)" % (gap_key, host, ts)
+                            )
+                            outer._onAnyFieldChanged(sync_frida=False)
+                        else:
+                            outer._setKfResultStyled("login3 refresh failed: %s" % detail)
+                        outer._outputTabs.setSelectedIndex(1)
+                    SwingUtilities.invokeLater(finish)
+                except Exception as error:
+                    error_text = str(error)
+                    print("[CipherKit] Refresh Token run_request error: %s" % error_text)
+                    print(traceback.format_exc())
+                    def finish_error():
+                        btn.setText(original_text)
+                        btn.setEnabled(True)
+                        outer._setKfResultStyled("login3 refresh error: %s" % error_text)
+                        outer._outputTabs.setSelectedIndex(1)
+                    SwingUtilities.invokeLater(finish_error)
+
+            import threading
+            worker = threading.Thread(target=run_request)
+            worker.setDaemon(True)
+            worker.start()
+            print("[CipherKit][DEBUG] _onRefreshToken: worker.start() returned, thread alive=%s" % worker.isAlive())
+        except BaseException as e:
+            print("[CipherKit] Refresh Token error (BaseException): %r" % (e,))
+            try:
+                traceback.print_exc()
+            except BaseException:
+                print("[CipherKit] Refresh Token error: traceback.print_exc() itself failed")
+            try:
+                self._setKfResultStyled("Refresh Token error: %r" % (e,))
+                self._outputTabs.setSelectedIndex(1)
+            except BaseException:
+                print("[CipherKit] Refresh Token error: failed to update status UI too")
 
     def _setKfResultStyled(self, text):
         """Restore the legacy styled Key Finder result rendering."""
@@ -471,6 +666,7 @@ class HashGenEditorTab(IMessageEditorTab):
 
     def _resetEditorState(self, content=None):
         self._currentMessage = content
+        self._tokenSyncedThisView = False
         self._contentType = ""
         self._requestPath = ""
         self._bodyLoadingProgrammatically = True
@@ -519,16 +715,30 @@ class HashGenEditorTab(IMessageEditorTab):
 
             # Extract URL path for app setting matching
             new_request_path = _extract_request_path(analyzed)
-            path_changed = (new_request_path != getattr(self, '_requestPath', ''))
+            old_request_path = getattr(self, '_requestPath', '')
+            path_changed = (new_request_path != old_request_path)
             self._requestPath = new_request_path
+            print("[CipherKit][DEBUG] setMessage: old_path=%r new_path=%r path_changed=%s" %
+                  (old_request_path, new_request_path, path_changed))
 
-            # Only reset Sign Order and Custom Data if switching to a DIFFERENT URL path
+            # Only reset Sign Order and Custom Data if switching to a DIFFERENT URL path.
+            # Burp calls setMessage() again on Send/refresh for the SAME message too —
+            # only a genuine path change should re-arm the one-time Frida-log sync below,
+            # not every redisplay of the same request.
             if path_changed:
+                print("[CipherKit][DEBUG] setMessage: path_changed=True -> resetting Sign Order/Custom Data/token-sync gate")
                 self._setKeysField("", False)
                 self._customDataPanel.setPairs({})
+                self._tokenSyncedThisView = False
+                # Only reload the saved app-setting config (which overwrites Custom
+                # Data from disk) on a genuine path change. Burp calls setMessage()
+                # again on Send/redisplay for the SAME message — re-running this here
+                # would stomp a live token the Frida sync or Refresh Token just wrote
+                # into Custom Data with the last-saved-to-disk value, since that live
+                # value was never persisted back to app_settings.json.
+                self._settingLoadedForPath = self._tryLoadAppSetting()
 
-            # Try auto-load an app setting matching this URL path
-            setting_loaded = self._tryLoadAppSetting()
+            setting_loaded = getattr(self, '_settingLoadedForPath', False)
 
             # Only auto-extract keys if no setting was loaded and Sign Order is empty
             if not setting_loaded and not self._keysUserEdited and not self._keysField.getText().strip():

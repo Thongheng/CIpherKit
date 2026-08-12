@@ -34,6 +34,14 @@ _here = os.path.dirname(os.path.abspath(_inspect.getfile(_inspect.currentframe()
 if _here not in sys.path:
     sys.path.insert(0, _here)
 
+# Jython/Burp keeps sys.modules across a plain disable/re-enable "reload" —
+# edits to core/*.py or ui/*.py otherwise never take effect until Burp's
+# whole JVM restarts. Force those submodules to be freshly re-executed from
+# disk every time this entry point loads.
+for _mod_name in list(sys.modules.keys()):
+    if _mod_name == "core" or _mod_name == "ui" or _mod_name.startswith("core.") or _mod_name.startswith("ui."):
+        del sys.modules[_mod_name]
+
 from core.snippet_manager import SnippetManager
 from core.app_setting_manager import AppSettingManager, mask_secret, merge_custom_data
 from core.body_parser import parse_body, serialize_body, flatten_data
@@ -44,6 +52,38 @@ from ui.batch_tab import BatchMapperTab
 from ui.components.rounded_border import RoundedBorder, _roundedCompound
 from ui.components.custom_data_panel import CustomDataPanel, CompactCustomDataPanel
 from ui.components.listeners import PayloadDocumentListener
+
+print("[CipherKit][DEBUG] HashGenBurp.py: module loaded fresh from disk (submodule cache cleared)")
+
+
+class _SafeOutStream(object):
+    """Wraps Burp's redirected stdout/stderr Java stream so print()-ing text
+    with non-ASCII characters (em dash, checkmark, etc.) never raises
+    UnicodeEncodeError. Jython defaults to strict ASCII when handing a
+    `unicode` string to that raw Java stream's write() — uncaught, that
+    silently kills whatever button handler was mid-print, with no visible
+    error and no further code in that method ever running.
+    """
+    def __init__(self, raw):
+        self._raw = raw
+
+    def write(self, text):
+        try:
+            text_type = unicode
+        except NameError:
+            text_type = str
+        if isinstance(text, text_type):
+            try:
+                text = text.encode('utf-8')
+            except Exception:
+                text = text.encode('ascii', 'replace')
+        self._raw.write(text)
+
+    def flush(self):
+        try:
+            self._raw.flush()
+        except Exception:
+            pass
 
 
 class _DisabledEditorTab(IMessageEditorTab):
@@ -82,9 +122,10 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         self._helpers = callbacks.getHelpers()
         callbacks.setExtensionName("CipherKit")
 
-        # Redirect stdout/stderr to Burp's output
-        sys.stdout = callbacks.getStdout()
-        sys.stderr = callbacks.getStderr()
+        # Redirect stdout/stderr to Burp's output, wrapped so non-ASCII text
+        # (em dash, checkmark, etc.) never throws UnicodeEncodeError mid-print.
+        sys.stdout = _SafeOutStream(callbacks.getStdout())
+        sys.stderr = _SafeOutStream(callbacks.getStderr())
 
         # Snippet managers
         ext_file   = callbacks.getExtensionFilename()
@@ -284,14 +325,156 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
         mainPanel = JPanel(BorderLayout(0, 8))
         mainPanel.setBorder(EmptyBorder(10, 10, 10, 10))
 
+        # --- Token Generation Profiles (used by the inline tab's "Refresh Token") ---
+        tokenGenPanel = JPanel(GridBagLayout())
+        tokenGenPanel.setBorder(_roundedCompound(radius=8, padding=10))
+        tgc = GridBagConstraints()
+        tgc.insets = Insets(3, 5, 3, 5)
+        tgc.fill = GridBagConstraints.HORIZONTAL
+
+        self._tokenGenProfileCombo = JComboBox()
+        self._tokenGenProfileCombo.addActionListener(lambda e: self._onTokenGenProfileSelected())
+        self._tokenGenHostField     = JTextField()
+        self._tokenGenAbaIdField    = JTextField()
+        self._tokenGenDeviceIdField = JTextField()
+        self._tokenGenPinHashField  = JTextField()
+        self._tokenGenSecretField   = JTextField()
+
+        tgc.gridy = 0; tgc.gridx = 0; tgc.weightx = 0; tgc.fill = GridBagConstraints.NONE
+        tokenGenPanel.add(JLabel("Profile:"), tgc)
+        tgc.gridx = 1; tgc.weightx = 1.0; tgc.fill = GridBagConstraints.HORIZONTAL
+        tokenGenPanel.add(self._tokenGenProfileCombo, tgc)
+        tgc.gridx = 2; tgc.weightx = 0; tgc.fill = GridBagConstraints.NONE
+        profileBtnRow = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0))
+        profileBtnRow.add(JButton("New", actionPerformed=self._onNewTokenGenProfile))
+        profileBtnRow.add(JButton("Delete", actionPerformed=self._onDeleteTokenGenProfile))
+        tokenGenPanel.add(profileBtnRow, tgc)
+
+        def _addTokenGenRow(y, label, field):
+            tgc.gridy = y; tgc.gridx = 0; tgc.weightx = 0; tgc.fill = GridBagConstraints.NONE
+            tokenGenPanel.add(JLabel(label), tgc)
+            tgc.gridx = 1; tgc.gridwidth = 2; tgc.weightx = 1.0; tgc.fill = GridBagConstraints.HORIZONTAL
+            tokenGenPanel.add(field, tgc)
+            tgc.gridwidth = 1
+
+        _addTokenGenRow(1, "Host:", self._tokenGenHostField)
+        self._tokenGenHostField.setToolTipText("Target host this profile applies to, e.g. mdev.ababank.com — used to auto-select the profile by request host")
+        _addTokenGenRow(2, "ABA ID:", self._tokenGenAbaIdField)
+        _addTokenGenRow(3, "Device ID:", self._tokenGenDeviceIdField)
+        _addTokenGenRow(4, "Pin Hash:", self._tokenGenPinHashField)
+        _addTokenGenRow(5, "Secret:", self._tokenGenSecretField)
+
+        tgc.gridy = 6; tgc.gridx = 0; tgc.gridwidth = 3; tgc.weightx = 1.0; tgc.fill = GridBagConstraints.HORIZONTAL
+        saveBtnRow = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0))
+        saveTokenGenBtn = JButton("Save Profile", actionPerformed=self._onSaveTokenGenProfile)
+        saveTokenGenBtn.setToolTipText("Save these values under the selected profile name")
+        saveBtnRow.add(saveTokenGenBtn)
+        tokenGenPanel.add(saveBtnRow, tgc)
+        tgc.gridwidth = 1
+
+        tokenGenWrap = JPanel(BorderLayout(0, 4))
+        tokenGenWrap.add(
+            JLabel(u"Token Generation Profiles (for Refresh Token — auto-selected by request host):"),
+            BorderLayout.NORTH
+        )
+        tokenGenWrap.add(tokenGenPanel, BorderLayout.CENTER)
+        mainPanel.add(tokenGenWrap, BorderLayout.NORTH)
+
         self._settingSummaryArea = JTextArea()
         self._settingSummaryArea.setEditable(False)
         self._settingSummaryArea.setFont(Font("Monospaced", Font.PLAIN, 12))
         self._settingSummaryArea.setBorder(EmptyBorder(5, 5, 5, 5))
         mainPanel.add(JScrollPane(self._settingSummaryArea), BorderLayout.CENTER)
 
+        self._reloadTokenGenProfileCombo()
         self._refreshSettingSummary()
         return mainPanel
+
+    def _getTokenGenProfiles(self):
+        app = self.app_setting_manager.get_app("ABA Mobile") or {}
+        return dict(app.get("token_gen_profiles", {}))
+
+    def _saveTokenGenProfiles(self, profiles):
+        name = "ABA Mobile"
+        app = dict(self.app_setting_manager.get_app(name) or {})
+        app["token_gen_profiles"] = profiles
+        self.app_setting_manager.save_app(name, app)
+
+    def _loadTokenGenProfileFields(self, cfg):
+        self._tokenGenHostField.setText(cfg.get("host", ""))
+        self._tokenGenAbaIdField.setText(cfg.get("aba_id", ""))
+        self._tokenGenDeviceIdField.setText(cfg.get("device_id", ""))
+        self._tokenGenPinHashField.setText(cfg.get("pin_hash", ""))
+        self._tokenGenSecretField.setText(cfg.get("secret", ""))
+
+    def _clearTokenGenProfileFields(self):
+        for f in (self._tokenGenHostField, self._tokenGenAbaIdField, self._tokenGenDeviceIdField,
+                  self._tokenGenPinHashField, self._tokenGenSecretField):
+            f.setText("")
+
+    def _reloadTokenGenProfileCombo(self, select_name=None):
+        profiles = self._getTokenGenProfiles()
+        self._tokenGenProfileCombo.removeAllItems()
+        for pname in sorted(profiles.keys()):
+            self._tokenGenProfileCombo.addItem(pname)
+        if profiles:
+            target = select_name if select_name in profiles else sorted(profiles.keys())[0]
+            self._tokenGenProfileCombo.setSelectedItem(target)
+            self._loadTokenGenProfileFields(profiles[target])
+        else:
+            self._clearTokenGenProfileFields()
+
+    def _onTokenGenProfileSelected(self, event=None):
+        name = self._tokenGenProfileCombo.getSelectedItem()
+        if not name:
+            return
+        profiles = self._getTokenGenProfiles()
+        if name in profiles:
+            self._loadTokenGenProfileFields(profiles[name])
+
+    def _onNewTokenGenProfile(self, event=None):
+        name = JOptionPane.showInputDialog(
+            self._mainPanel, "Profile name (e.g. UAT, PROD):",
+            "New Token Config Profile", JOptionPane.PLAIN_MESSAGE, None, None, ""
+        )
+        if not name or not str(name).strip():
+            return
+        name = str(name).strip()
+        profiles = self._getTokenGenProfiles()
+        profiles[name] = {"host": "", "aba_id": "", "device_id": "", "pin_hash": "", "secret": ""}
+        self._saveTokenGenProfiles(profiles)
+        self._reloadTokenGenProfileCombo(select_name=name)
+        self._refreshSettingSummary()
+
+    def _onDeleteTokenGenProfile(self, event=None):
+        name = self._tokenGenProfileCombo.getSelectedItem()
+        if not name:
+            return
+        profiles = self._getTokenGenProfiles()
+        if name in profiles:
+            del profiles[name]
+            self._saveTokenGenProfiles(profiles)
+            self._reloadTokenGenProfileCombo()
+            self._refreshSettingSummary()
+
+    def _onSaveTokenGenProfile(self, event=None):
+        name = self._tokenGenProfileCombo.getSelectedItem()
+        if not name:
+            JOptionPane.showMessageDialog(
+                self._mainPanel, "Create a profile first (click New).",
+                "Save Profile", JOptionPane.WARNING_MESSAGE
+            )
+            return
+        profiles = self._getTokenGenProfiles()
+        profiles[name] = {
+            "host":      self._tokenGenHostField.getText().strip(),
+            "aba_id":    self._tokenGenAbaIdField.getText().strip(),
+            "device_id": self._tokenGenDeviceIdField.getText().strip(),
+            "pin_hash":  self._tokenGenPinHashField.getText().strip(),
+            "secret":    self._tokenGenSecretField.getText().strip(),
+        }
+        self._saveTokenGenProfiles(profiles)
+        self._refreshSettingSummary()
 
 
 
@@ -437,6 +620,16 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IMessageEditorTabFa
             lines.append("  Algorithm     : SHA-1")
             lines.append("  Hash Field    : %s" % app.get("hash_field", "hash"))
             lines.append("  Default KF Key: %s" % app.get("default_kf_key", "token"))
+            token_gen_profiles = app.get("token_gen_profiles", {})
+            if token_gen_profiles:
+                lines.append("  Token Profiles:")
+                for pname, cfg in sorted(token_gen_profiles.items()):
+                    lines.append("    - %s | host=%s aba_id=%s device_id=%s pin_hash=%s secret=%s" % (
+                        pname, cfg.get("host", ""), cfg.get("aba_id", ""), cfg.get("device_id", ""),
+                        mask_secret(cfg.get("pin_hash", "")), mask_secret(cfg.get("secret", "")),
+                    ))
+            else:
+                lines.append("  Token Profiles: (none saved)")
             custom_data = app.get("custom_data", {})
             if custom_data:
                 custom_str = ", ".join("%s=%s" % (k, v) for k, v in custom_data.items())
